@@ -15,6 +15,17 @@ from analyzer import technical_score_series
 TRADING_DAYS = 252
 
 
+def _align(ts, index):
+    """Make a user-supplied date comparable with the price index (tz-aware or naive)."""
+    ts = pd.Timestamp(ts)
+    tz = getattr(index, "tz", None)
+    if tz is not None and ts.tzinfo is None:
+        return ts.tz_localize(tz)
+    if tz is None and ts.tzinfo is not None:
+        return ts.tz_localize(None)
+    return ts
+
+
 def metrics(r: pd.Series) -> dict:
     r = r.dropna()
     if len(r) < 2:
@@ -52,18 +63,32 @@ def extract_trades(pos: pd.Series, close: pd.Series, cost_bps: float) -> pd.Data
 
 
 def run_backtest(df: pd.DataFrame, bench: pd.Series | None = None, buy_at: float = 0.4,
-                 sell_at: float = -0.4, cost_bps: float = 5.0, weights: dict | None = None) -> dict:
+                 sell_at: float = -0.4, cost_bps: float = 5.0, weights: dict | None = None,
+                 start=None, end=None) -> dict:
+    """start/end pick the test window. Indicators are still computed on all earlier history,
+    so a window that starts in 2022 isn't penalised by the 200-day warm-up."""
     if sell_at >= buy_at:
         raise ValueError("sell_at must be below buy_at")
+    if end is not None:
+        df = df.loc[:_align(end, df.index)]
     close = df["Close"]
     score = technical_score_series(df, bench, weights)
 
+    first = score.first_valid_index()
+    if first is None:
+        raise ValueError("Not enough history: need at least ~200 trading days.")
+    begin = first if start is None else max(first, _align(start, df.index))
+    in_window = df.index >= begin
+    if in_window.sum() < 30:
+        raise ValueError("That date range is too short, or ends before the indicators have enough history. "
+                         "Pick a longer range.")
+
     holding, state = False, np.zeros(len(df))
-    for i, s in enumerate(score.to_numpy()):
-        if not np.isnan(s):
-            if not holding and s >= buy_at:
+    for i, s_ in enumerate(score.where(in_window).to_numpy()):
+        if not np.isnan(s_):
+            if not holding and s_ >= buy_at:
                 holding = True
-            elif holding and s <= sell_at:
+            elif holding and s_ <= sell_at:
                 holding = False
         state[i] = holding
     state = pd.Series(state, index=df.index)
@@ -73,16 +98,12 @@ def run_backtest(df: pd.DataFrame, bench: pd.Series | None = None, buy_at: float
     turnover = pos.diff().abs().fillna(0)
     strat = pos * ret - turnover * cost_bps / 1e4
 
-    start = score.first_valid_index()
-    if start is None:
-        raise ValueError("Not enough history: need at least ~200 trading days.")
-    live = df.index >= start
+    live = in_window
     strat, bh, pos_l = strat[live].copy(), ret[live].copy(), pos[live]
     strat.iloc[0] = 0.0
     bh.iloc[0] = 0.0
 
     trades = extract_trades(pos, close, cost_bps)
-    trades = trades[trades["Entry date"] >= start] if not trades.empty else trades
     closed = trades[trades["Status"] == "closed"] if not trades.empty else trades
     return {
         "score": score[live], "close": close[live], "pos": pos_l,
@@ -94,7 +115,7 @@ def run_backtest(df: pd.DataFrame, bench: pd.Series | None = None, buy_at: float
         "n_trades": int(len(trades)),
         "win_rate": float((closed["Return"] > 0).mean()) if len(closed) else np.nan,
         "avg_trade": float(closed["Return"].mean()) if len(closed) else np.nan,
-        "start": start,
+        "start": begin,
     }
 
 

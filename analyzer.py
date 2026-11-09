@@ -6,20 +6,24 @@ plain-English reason. Factors are weighted and combined into a final score.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
-# Weights sum to 1.0. Tweak to match your style (trend-follower vs value investor).
-WEIGHTS = {
-    "Trend": 0.25,
+# Relative importance of each factor (normalised automatically). Treat as read-only:
+# pass your own dict via the `weights` argument instead of mutating this one.
+DEFAULT_WEIGHTS = {
+    "Trend": 0.20,
+    "Short-term trend": 0.10,
     "Momentum (RSI)": 0.10,
     "MACD": 0.10,
     "Bollinger": 0.05,
     "Relative strength vs market": 0.15,
-    "Valuation": 0.15,
+    "Valuation": 0.10,
     "Growth & profitability": 0.10,
     "Analyst consensus": 0.10,
 }
+WEIGHTS = DEFAULT_WEIGHTS  # backwards-compatible alias
 
 
 @dataclass
@@ -56,6 +60,8 @@ def bollinger(close: pd.Series, window=20, k=2):
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     c = out["Close"]
+    out["SMA9"] = c.rolling(9).mean()
+    out["SMA20"] = c.rolling(20).mean()
     out["SMA50"] = c.rolling(50).mean()
     out["SMA200"] = c.rolling(200).mean()
     out["RSI"] = rsi(c)
@@ -79,6 +85,22 @@ def f_trend(df: pd.DataFrame) -> Factor:
     else:
         s -= 1; why.append("50-day is below 200-day (death-cross regime)")
     return Factor("Trend", s, "; ".join(why).capitalize() + ".")
+
+
+def f_short_trend(df: pd.DataFrame) -> Factor:
+    last = df.iloc[-1]
+    if pd.isna(last["SMA20"]):
+        return Factor("Short-term trend", 0, "Not enough history for a 20-day average.", False)
+    s, why = 0.0, []
+    if last["Close"] > last["SMA20"]:
+        s += 1; why.append("price is above the 20-day average")
+    else:
+        s -= 1; why.append("price is below the 20-day average")
+    if last["SMA9"] > last["SMA20"]:
+        s += 1; why.append("9-day is above 20-day (short-term momentum up)")
+    else:
+        s -= 1; why.append("9-day is below 20-day (short-term momentum down)")
+    return Factor("Short-term trend", s, "; ".join(why).capitalize() + ".")
 
 
 def f_rsi(df: pd.DataFrame) -> Factor:
@@ -132,7 +154,7 @@ def f_valuation(info: dict) -> Factor:
     pe = info.get("forwardPE") or info.get("trailingPE")
     peg = info.get("pegRatio") or info.get("trailingPegRatio")
     if not pe or pe <= 0:
-        return Factor("Valuation", 0, "No meaningful P/E (negative or missing earnings).", False)
+        return Factor("Valuation", 0, "No meaningful P/E (negative, missing, or not applicable).", False)
     s, why = 0.0, [f"P/E {pe:.1f}"]
     if pe < 15: s += 1
     elif pe > 35: s -= 1
@@ -177,37 +199,39 @@ def f_analysts(info: dict, price: float) -> Factor:
 
 
 # ---------- Combine ----------
-def analyze(df: pd.DataFrame, info: dict, bench: pd.Series | None = None) -> dict:
-    df = add_indicators(df)
-    price = float(df["Close"].iloc[-1])
-    factors = [
-        f_trend(df), f_rsi(df), f_macd(df), f_bollinger(df),
-        f_relative_strength(df, bench), f_valuation(info), f_growth(info),
-        f_analysts(info, price),
-    ]
-    live = [f for f in factors if f.available]
-    wsum = sum(WEIGHTS[f.name] for f in live) or 1
-    score = sum(f.score * WEIGHTS[f.name] for f in live) / wsum  # -2..+2
-    pct = round((score + 2) / 4 * 100)  # 0..100
-
-    verdict = verdict_from_score(score)
-
-    # Confidence: how much data we had, and how much the factors agree.
-    coverage = sum(WEIGHTS[f.name] for f in live)
-    signs = [np.sign(f.score) for f in live if f.score != 0]
-    agree = abs(sum(signs)) / len(signs) if signs else 0
-    confidence = round(100 * (0.5 * coverage + 0.5 * agree))
-
-    return {"df": df, "price": price, "factors": factors, "score": score,
-            "score_pct": pct, "verdict": verdict, "confidence": confidence}
-
-
 def verdict_from_score(score: float) -> str:
     if score >= 1.0: return "STRONG BUY"
     if score >= 0.4: return "BUY"
     if score > -0.4: return "HOLD"
     if score > -1.0: return "SELL"
     return "STRONG SELL"
+
+
+def analyze(df: pd.DataFrame, info: dict, bench: pd.Series | None = None,
+            weights: dict | None = None) -> dict:
+    w = weights or DEFAULT_WEIGHTS
+    df = add_indicators(df)
+    price = float(df["Close"].iloc[-1])
+    factors = [
+        f_trend(df), f_short_trend(df), f_rsi(df), f_macd(df), f_bollinger(df),
+        f_relative_strength(df, bench), f_valuation(info), f_growth(info),
+        f_analysts(info, price),
+    ]
+    live = [f for f in factors if f.available]
+    live_w = sum(w.get(f.name, 0) for f in live)
+    score = sum(f.score * w.get(f.name, 0) for f in live) / (live_w or 1)  # -2..+2
+    pct = round((score + 2) / 4 * 100)  # 0..100
+    verdict = verdict_from_score(score)
+
+    # Confidence: how much of the weighting had data, and how much the factors agree.
+    total_w = sum(w.get(f.name, 0) for f in factors) or 1
+    coverage = live_w / total_w
+    signs = [np.sign(f.score) for f in live if f.score != 0]
+    agree = abs(sum(signs)) / len(signs) if signs else 0
+    confidence = round(100 * (0.5 * coverage + 0.5 * agree))
+
+    return {"df": df, "price": price, "factors": factors, "score": score,
+            "score_pct": pct, "verdict": verdict, "confidence": confidence, "weights": w}
 
 
 def technical_score_series(df: pd.DataFrame, bench: pd.Series | None = None,
@@ -219,13 +243,16 @@ def technical_score_series(df: pd.DataFrame, bench: pd.Series | None = None,
     Fundamentals and analyst data are excluded on purpose: we only have today's
     snapshot of those, and using them on past dates would be look-ahead bias.
     """
-    w = weights or WEIGHTS
+    w = weights or DEFAULT_WEIGHTS
     d = add_indicators(df)
     c = d["Close"]
     F = pd.DataFrame(index=d.index)
 
     F["Trend"] = np.where(c > d["SMA200"], 1.0, -1.0) + np.where(d["SMA50"] > d["SMA200"], 1.0, -1.0)
     F.loc[d["SMA200"].isna(), "Trend"] = np.nan
+
+    F["Short-term trend"] = np.where(c > d["SMA20"], 1.0, -1.0) + np.where(d["SMA9"] > d["SMA20"], 1.0, -1.0)
+    F.loc[d["SMA20"].isna(), "Short-term trend"] = np.nan
 
     v = d["RSI"]
     F["Momentum (RSI)"] = np.select([v >= 80, v >= 70, v <= 20, v <= 30, v >= 50],

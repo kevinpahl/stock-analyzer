@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from analyzer import WEIGHTS, analyze
+from analyzer import DEFAULT_WEIGHTS, analyze
+from utils import strip_tz
 
 MIN_ROWS = 210  # need ~200 days for the trend factor
 
@@ -64,18 +65,20 @@ def download_history(tickers: list[str], period: str = "2y") -> dict[str, pd.Dat
         have = set(raw.columns.get_level_values(0))
         for t in tickers:
             if t in have:
-                d = raw[t].dropna(subset=["Close"])
+                d = strip_tz(raw[t].dropna(subset=["Close"]))
                 if not d.empty:
                     out[t] = d
     elif len(tickers) == 1:
-        out[tickers[0]] = raw.dropna(subset=["Close"])
+        out[tickers[0]] = strip_tz(raw.dropna(subset=["Close"]))
     return out
 
 
 def rank_movers(data: dict[str, pd.DataFrame], bench: pd.Series | None = None,
                 mover_by: str = "Biggest % gainers", top_n: int = 20, min_price: float = 5.0,
-                min_avg_volume: float = 500_000, info_loader=None) -> tuple[pd.DataFrame, dict]:
+                min_avg_volume: float = 500_000, info_loader=None,
+                weights: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """1) keep liquid stocks, 2) pick the top_n movers, 3) score each, 4) sort by score."""
+    w = weights or DEFAULT_WEIGHTS
     rows, frames, skipped = [], {}, 0
     for t, raw in data.items():
         d = raw.dropna(subset=["Close"])
@@ -108,9 +111,9 @@ def rank_movers(data: dict[str, pd.DataFrame], bench: pd.Series | None = None,
     for r in m.to_dict("records"):
         t = r["Ticker"]
         info = info_loader(t) if info_loader else {}
-        res = analyze(frames[t], info, bench)
+        res = analyze(frames[t], info, bench, w)
         live = [f for f in res["factors"] if f.available]
-        top = sorted(live, key=lambda f: abs(f.score * WEIGHTS[f.name]), reverse=True)[:2]
+        top = sorted(live, key=lambda f: abs(f.score * w.get(f.name, 0)), reverse=True)[:2]
         r.update({"Verdict": res["verdict"], "Score": res["score_pct"], "Confidence": res["confidence"],
                   "RSI": float(res["df"]["RSI"].iloc[-1]),
                   "Drivers": ", ".join(f"{f.name.split(' (')[0]} {f.score:+.0f}" for f in top)})

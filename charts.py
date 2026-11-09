@@ -12,19 +12,20 @@ MA = {"SMA 9": ("SMA9", "#f59e0b"), "SMA 20": ("SMA20", "#2563eb"),
       "SMA 50": ("SMA50", "#7c3aed"), "SMA 200": ("SMA200", "#64748b")}
 
 
-def _style(fig: go.Figure, height: int, weekend_gaps: bool = False) -> go.Figure:
+def _style(fig: go.Figure, height: int, rangebreaks: list | None = None) -> go.Figure:
     fig.update_layout(height=height, margin=dict(l=8, r=8, t=30, b=8), hovermode="x unified",
                       legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
                       xaxis_rangeslider_visible=False, bargap=0.15)
     fig.update_xaxes(showgrid=False, showline=True, linecolor=GRID)
     fig.update_yaxes(gridcolor=GRID, zeroline=False)
-    if weekend_gaps:
-        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    if rangebreaks:
+        fig.update_xaxes(rangebreaks=rangebreaks)
     return fig
 
 
 def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[str],
-                panels: list[str], interval: str) -> go.Figure:
+                panels: list[str], interval: str, intraday: bool = False, us_hours: bool = True,
+                prepost: bool = False) -> go.Figure:
     """df must already contain indicator columns (see analyzer.add_indicators)."""
     d = df.loc[start:end]
     n = len(panels)
@@ -75,7 +76,13 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
                                      line=dict(color="#f59e0b", width=1.3)), row=r, col=1)
             fig.update_yaxes(title_text="MACD", row=r, col=1)
         r += 1
-    return _style(fig, 460 + 150 * n, weekend_gaps=(interval == "Daily"))
+    if intraday:  # hide nights and weekends so intraday bars sit side by side
+        breaks = [dict(bounds=["sat", "mon"])]
+        if us_hours:
+            breaks.append(dict(bounds=[20, 4] if prepost else [16, 9.5], pattern="hour"))
+    else:
+        breaks = [dict(bounds=["sat", "mon"])] if interval == "Daily" else None
+    return _style(fig, 460 + 150 * n, breaks)
 
 
 def equity_chart(eq: pd.DataFrame) -> go.Figure:

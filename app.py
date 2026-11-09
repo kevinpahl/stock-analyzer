@@ -5,15 +5,20 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
-from backtest import run_backtest, split_metrics
-from charts import equity_chart, price_chart, trades_chart
-from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
-from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
-                   is_index, preset_start, resample_ohlcv, strip_tz)
+APP_VERSION = "3.0"
+st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide",
-                   initial_sidebar_state="expanded")
+try:
+    from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
+    from backtest import run_backtest, split_metrics
+    from charts import equity_chart, price_chart, trades_chart
+    from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
+    from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
+                       is_index, live_params, preset_start, resample_ohlcv, strip_tz)
+except ImportError as e:
+    st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
+             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, requirements.txt.")
+    st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
 st.markdown("""
@@ -26,8 +31,6 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 [data-testid="stMetric"] { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 14px 16px; }
 [data-testid="stMetricLabel"] p { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
 [data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 600; }
-.stTabs [data-baseweb="tab-list"] { gap: 6px; }
-.stTabs [data-baseweb="tab"] { padding: 8px 16px; font-weight: 500; }
 .muted { opacity: .65; font-size: .85rem; }
 .ctl { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin: 0 0 4px 2px; }
 .sym-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
@@ -37,6 +40,7 @@ h1, h2, h3 { letter-spacing: -0.02em; }
          border: 1px solid rgba(128,128,128,.45); opacity: .85; }
 .card { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 14px 16px; min-height: 108px; }
 .card .lbl { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
+.card .big { font-size: 1.25rem; font-weight: 700; margin: 8px 0 6px; }
 .pill { display: inline-block; color: #fff; font-weight: 700; font-size: 1.05rem; padding: 4px 14px;
         border-radius: 999px; margin: 6px 0 12px; letter-spacing: .02em; }
 .gauge { position: relative; height: 8px; border-radius: 999px; margin: 2px 0 4px;
@@ -49,6 +53,9 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 
 VERDICT_COLORS = {"STRONG BUY": "#0a7d33", "BUY": "#16a34a", "HOLD": "#b8860b",
                   "SELL": "#dc2626", "STRONG SELL": "#991b1b"}
+LIVE_TTL = 20  # seconds: how long short-lived market data is reused before asking Yahoo again
+REFRESH_OPTIONS = {"Off": 0, "10 sec": 10, "30 sec": 30, "60 sec": 60}
+SECTIONS = ["Analyze", "Backtest", "Top movers"]
 
 
 # ---------- small UI helpers (written to work across Streamlit versions) ----------
@@ -97,14 +104,78 @@ def signal_card(res: dict) -> str:
             f"Confidence {res['confidence']}%</div></div>")
 
 
+def now_et() -> str:
+    return pd.Timestamp.now(tz="America/New_York").strftime("%H:%M:%S")
+
+
 # ---------- cached data loaders ----------
-@st.cache_data(ttl=900, show_spinner=False)
-def load_daily(sym: str) -> pd.DataFrame:
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_hist_max(sym: str) -> pd.DataFrame:
     h = yf.Ticker(sym).history(period="max", auto_adjust=True)
     return strip_tz(h) if not h.empty else h
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=LIVE_TTL, show_spinner=False)
+def load_recent_daily(sym: str) -> pd.DataFrame:
+    h = yf.Ticker(sym).history(period="5d", interval="1d", auto_adjust=True)
+    return strip_tz(h) if not h.empty else h
+
+
+def get_daily(sym: str) -> pd.DataFrame:
+    """Full daily history (cached 1h) with the latest bars refreshed every few seconds."""
+    base = load_hist_max(sym)
+    if base.empty:
+        return base
+    try:
+        rec = load_recent_daily(sym)
+    except Exception:
+        return base
+    if rec.empty:
+        return base
+    return pd.concat([base[~base.index.isin(rec.index)], rec]).sort_index()
+
+
+@st.cache_data(ttl=LIVE_TTL, show_spinner=False)
+def load_intraday(sym: str, interval: str, period: str, prepost: bool) -> pd.DataFrame:
+    h = yf.Ticker(sym).history(period=period, interval=interval, prepost=prepost, auto_adjust=True)
+    return strip_tz(h) if not h.empty else h
+
+
+def _num(v):
+    try:
+        v = float(v)
+        return None if v != v else v
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=LIVE_TTL, show_spinner=False)
+def load_quote(sym: str) -> dict:
+    t = yf.Ticker(sym)
+    q = {"price": None, "prev": None, "high": None, "low": None, "age_min": None}
+    try:
+        fi = t.fast_info
+        for key, attr in (("price", "last_price"), ("prev", "previous_close"),
+                          ("high", "day_high"), ("low", "day_low")):
+            try:
+                q[key] = _num(getattr(fi, attr))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        h = t.history(period="1d", interval="1m")
+        if not h.empty:
+            q["age_min"] = (pd.Timestamp.now(tz=h.index.tz) - h.index[-1]).total_seconds() / 60
+            q["price"] = q["price"] or _num(h["Close"].iloc[-1])
+            q["high"] = q["high"] or _num(h["High"].max())
+            q["low"] = q["low"] or _num(h["Low"].min())
+    except Exception:
+        pass
+    return q
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_meta(sym: str):
     t = yf.Ticker(sym)
     try:
@@ -126,27 +197,38 @@ def load_info(sym: str) -> dict:
         return {}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_overview():
     return download_history([s for _, s in OVERVIEW], "10d")
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_universe_data(tickers: tuple, period: str):
     return download_history(list(tickers), period)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_universe(label: str, custom: str):
+    return get_universe(label, custom)
+
+
+def refresh_now():
+    for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe):
+        getattr(fn, "clear", lambda: None)()
 
 
 def get_bench(ticker: str):
     bsym = benchmark_for(ticker)
     if not bsym:
         return None
-    b = load_daily(bsym)
+    b = get_daily(bsym)
     return b["Close"] if not b.empty else None
 
 
 # ---------- session state + sidebar ----------
 st.session_state.setdefault("ticker", "AAPL")
 st.session_state.setdefault("quick", "—")
+st.session_state.setdefault("section", "Analyze")
 
 
 def apply_quick():
@@ -156,8 +238,9 @@ def apply_quick():
     st.session_state["quick"] = "—"
 
 
-def set_ticker(sym: str):
+def open_in_analyzer(sym: str):
     st.session_state["ticker"] = sym
+    st.session_state["section"] = "Analyze"
 
 
 with st.sidebar:
@@ -166,16 +249,34 @@ with st.sidebar:
                   help="Stocks (AAPL), ETFs (SPY) or indexes (^GSPC = S&P 500, ^NDX = Nasdaq-100).")
     st.selectbox("Quick picks", list(QUICK_PICKS), key="quick", on_change=apply_quick)
     ticker = st.session_state["ticker"].upper().strip()
+    st.markdown("### Live data")
+    refresh_label = st.selectbox("Auto-refresh", list(REFRESH_OPTIONS), index=2, key="refresh")
+    st.button("Refresh now", on_click=refresh_now, key="refresh_now")
     with st.expander("Scoring weights"):
         st.caption("Relative importance of each factor. They're normalized automatically.")
         weights = {k: st.slider(k, 0.0, 0.5, v, 0.05, key=f"w_{k}") for k, v in DEFAULT_WEIGHTS.items()}
-    st.caption("Data: Yahoo Finance via yfinance, cached ~15 min. Educational only, not financial advice.")
+    st.caption(f"Data: Yahoo Finance via yfinance (free feed: usually near real-time, but some exchanges lag up "
+               f"to ~15 min). Educational only, not financial advice. · App v{APP_VERSION}")
+
+REFRESH_SECS = REFRESH_OPTIONS.get(refresh_label, 0)
 
 
-# ---------- header + market snapshot ----------
+def refreshing(fn, every: int | None = None):
+    """Wrap `fn` so it re-runs on its own every N seconds without reloading the whole page."""
+    secs = REFRESH_SECS if every is None else every
+    frag = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+    if frag is None:
+        return fn
+    try:
+        return frag(run_every=f"{secs}s" if secs else None)(fn)
+    except TypeError:
+        return frag(fn)
+
+
+# ---------- header ----------
 st.markdown("<h1 style='margin-bottom:2px'>Stock Analyzer</h1>"
-            "<div class='muted' style='margin-bottom:14px'>Technicals, valuation and analyst data combined into a "
-            "transparent Buy / Hold / Sell score.</div>", unsafe_allow_html=True)
+            "<div class='muted' style='margin-bottom:14px'>Live prices, technicals, valuation and analyst data "
+            "combined into a transparent Buy / Hold / Sell score.</div>", unsafe_allow_html=True)
 
 
 def market_snapshot():
@@ -193,53 +294,84 @@ def market_snapshot():
                    delta_color="inverse" if sym == "^VIX" else "normal")
 
 
-market_snapshot()
+refreshing(market_snapshot)()
+st.write("")
+ctl("Section")
+section = segmented("Section", SECTIONS, "Analyze", "section")
 st.write("")
 
 
 # ======================= ANALYZE =======================
-def render_analyze(ticker: str, weights: dict):
-    if not ticker:
-        st.info("Enter a symbol in the sidebar.")
-        return
+def live_kpis(ticker: str, weights: dict):
+    """Price strip + signal. Auto-refreshes."""
     idx = is_index(ticker)
-    daily = load_daily(ticker)
+    daily = get_daily(ticker)
     if daily.empty or len(daily) < 30:
         st.error("No data found for that symbol. Check the spelling (indexes start with ^, e.g. ^GSPC).")
         return
-    bench = get_bench(ticker)
-    info, news = load_meta(ticker)
-    res = analyze(daily, {} if idx else info, bench, weights)
+    info, _ = load_meta(ticker)
+    res = analyze(daily, {} if idx else info, get_bench(ticker), weights)
+    q = load_quote(ticker)
+    close = daily["Close"]
+    price = q.get("price") or float(close.iloc[-1])
+    prev = q.get("prev") or float(close.iloc[-2])
+    hi = q.get("high") or float(daily["High"].iloc[-1])
+    lo = q.get("low") or float(daily["Low"].iloc[-1])
+    pre = "" if idx else "$"
+    age = q.get("age_min")
+    live = age is not None and age < 20
+    status = ("<span style='color:#16a34a'>● LIVE</span>" if live
+              else "<span style='opacity:.75'>● Market closed</span>")
 
-    name = INDEX_NAMES.get(ticker) or info.get("longName") or info.get("shortName") or ticker
-    badge = "<span class='badge'>INDEX</span>" if idx else ""
-    st.markdown(f"<div class='sym-title'><span class='name'>{name}</span>"
-                f"<span class='tick'>{ticker}</span>{badge}</div>", unsafe_allow_html=True)
-    if idx:
-        st.caption(f"An index can't be bought directly. Tracking funds include "
-                   f"{ETF_FOR.get(ticker, 'a matching ETF')}. Valuation and analyst factors don't apply, "
-                   "so the signal uses price technicals only.")
+    k1, k2, k3, k4 = st.columns([1.2, 1, 1.2, 1.5])
+    k1.metric("Last price", f"{pre}{price:,.2f}", f"{price - prev:+,.2f} ({price / prev - 1:+.2%})")
+    k2.metric("Day range", f"{lo:,.2f} – {hi:,.2f}")
+    k3.markdown(f"<div class='card'><div class='lbl'>Market</div><div class='big'>{status}</div>"
+                f"<div class='muted'>Updated {now_et()} ET</div></div>", unsafe_allow_html=True)
+    k4.markdown(signal_card(res), unsafe_allow_html=True)
 
-    kpi = st.container()
+
+def why_table(ticker: str, weights: dict):
+    daily = get_daily(ticker)
+    if daily.empty or len(daily) < 30:
+        return
+    info, _ = load_meta(ticker)
+    res = analyze(daily, {} if is_index(ticker) else info, get_bench(ticker), weights)
+    total_w = sum(weights.values()) or 1
+
+    def reading(f):
+        if not f.available:
+            return "n/a"
+        return "Bullish" if f.score > 0.5 else "Bearish" if f.score < -0.5 else "Neutral"
+
+    rows = [{"Factor": f.name, "Reading": reading(f), "Score (-2 to +2)": f.score if f.available else None,
+             "Weight": weights.get(f.name, 0) / total_w * 100, "Reasoning": f.reason} for f in res["factors"]]
+    show_df(pd.DataFrame(rows), column_config={"Weight": st.column_config.NumberColumn(format="%.0f%%")})
+
+
+def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
+               overlays: list, panels: list):
+    """Intraday chart. Auto-refreshes."""
+    period, eff, note = live_params(interval, rng)
+    df = load_intraday(ticker, eff, period, prepost)
+    if df.empty or len(df) < 2:
+        st.info("No intraday bars available yet (the market may be closed, or this symbol has no intraday data).")
+        return
+    cdf = add_indicators(df)
+    us = not ("." in ticker or ticker.endswith(("-USD", "=X", "=F")))
+    show_chart(price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, eff,
+                           intraday=True, us_hours=us, prepost=prepost))
+    st.caption(f"{len(cdf)} {eff} bars · last bar {cdf.index[-1]:%b %d, %H:%M} (exchange time). "
+               "Moving averages are measured in bars. " + note)
+
+
+def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: str, interval: str,
+                 overlays: list, panels: list):
     first_date, last_date = daily.index[0], daily.index[-1]
-
-    # --- date / interval controls ---
-    c1, c2, c3 = st.columns([5, 3, 2])
-    with c1:
-        ctl("Date range")
-        rng = segmented("Date range", PRESETS + ["Custom"], "1Y", "rng")
-    with c2:
-        ctl("Interval")
-        interval = segmented("Interval", INTERVALS, "Daily", "interval")
-    with c3:
-        ctl("Chart")
-        ctype = segmented("Chart", ["Candles", "Line"], "Candles", "ctype")
-
     if rng == "Custom":
         d1, d2 = st.columns(2)
-        default_from = max(first_date, last_date - pd.DateOffset(years=1))
-        s_in = d1.date_input("From", value=default_from.date(), min_value=first_date.date(),
-                             max_value=last_date.date(), key=f"c_from_{ticker}")
+        s_in = d1.date_input("From", value=max(first_date, last_date - pd.DateOffset(years=1)).date(),
+                             min_value=first_date.date(), max_value=last_date.date(), key=f"c_from_{ticker}")
         e_in = d2.date_input("To", value=last_date.date(), min_value=first_date.date(),
                              max_value=last_date.date(), key=f"c_to_{ticker}")
         start, end = pd.Timestamp(s_in), pd.Timestamp(e_in)
@@ -254,46 +386,80 @@ def render_analyze(ticker: str, weights: dict):
     if len(view) < 2:
         st.warning("Too few bars in that range for this interval. Try a longer range or a finer interval.")
         return
-
-    o1, o2 = st.columns(2)
-    overlays = o1.multiselect("Overlays", ["SMA 9", "SMA 20", "SMA 50", "SMA 200", "Bollinger bands"],
-                              default=["SMA 9", "SMA 20", "SMA 50"], key="overlays")
-    has_vol = float(view["Volume"].sum()) > 0
-    panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"] if has_vol else ["RSI", "MACD"],
-                            default=["Volume", "RSI"] if has_vol else ["RSI"], key=f"panels_{has_vol}")
-
-    # --- KPI row (filled now that the range is known) ---
-    pre = "" if idx else "$"
-    last_px = float(daily["Close"].iloc[-1])
-    day_chg = float(daily["Close"].pct_change().iloc[-1])
-    rng_ret = float(view["Close"].iloc[-1] / view["Close"].iloc[0] - 1)
-    with kpi:
-        k1, k2, k3, k4 = st.columns([1, 1, 1.3, 1.5])
-        k1.metric("Last price", f"{pre}{last_px:,.2f}", f"{day_chg:+.2%} today")
-        k2.metric(f"Return ({rng})", f"{rng_ret:+.1%}")
-        k3.metric("Range high / low", f"{view['High'].max():,.2f} / {view['Low'].min():,.2f}")
-        k4.markdown(signal_card(res), unsafe_allow_html=True)
-
+    r1, r2, r3 = st.columns(3)
+    r1.metric(f"Return ({rng})", f"{view['Close'].iloc[-1] / view['Close'].iloc[0] - 1:+.1%}")
+    r2.metric("Range high", f"{view['High'].max():,.2f}")
+    r3.metric("Range low", f"{view['Low'].min():,.2f}")
     show_chart(price_chart(chart_df, start, end, ctype, overlays, panels, interval))
     st.caption(f"{len(view)} {interval.lower()} bars. Moving averages are measured in {interval.lower()} bars. "
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
 
+
+def render_analyze(ticker: str, weights: dict):
+    if not ticker:
+        st.info("Enter a symbol in the sidebar.")
+        return
+    idx = is_index(ticker)
+    daily = get_daily(ticker)
+    if daily.empty or len(daily) < 30:
+        st.error("No data found for that symbol. Check the spelling (indexes start with ^, e.g. ^GSPC).")
+        return
+    info, news = load_meta(ticker)
+    name = INDEX_NAMES.get(ticker) or info.get("longName") or info.get("shortName") or ticker
+    badge = "<span class='badge'>INDEX</span>" if idx else ""
+    st.markdown(f"<div class='sym-title'><span class='name'>{name}</span>"
+                f"<span class='tick'>{ticker}</span>{badge}</div>", unsafe_allow_html=True)
+    if idx:
+        st.caption(f"An index can't be bought directly. Tracking funds include "
+                   f"{ETF_FOR.get(ticker, 'a matching ETF')}. Valuation and analyst factors don't apply, "
+                   "so the signal uses price technicals only.")
+
+    refreshing(live_kpis)(ticker, weights)
+    st.write("")
+
+    # --- chart controls: Live (intraday, auto-refreshing) or History (day / week / month ...) ---
+    c0, c1, c2, c3 = st.columns([2, 4, 4, 2])
+    with c0:
+        ctl("View")
+        view = segmented("View", ["Live", "History"], "Live", "view")
+    if view == "Live":
+        with c1:
+            ctl("Range")
+            lrng = segmented("Range", ["1D", "5D", "1M"], "1D", "live_rng")
+        with c2:
+            ctl("Bar size")
+            lint = segmented("Bar size", INTRADAY, "5m", "live_int")
+    else:
+        with c1:
+            ctl("Date range")
+            rng = segmented("Date range", PRESETS + ["Custom"], "1Y", "rng")
+        with c2:
+            ctl("Interval")
+            interval = segmented("Interval", INTERVALS, "Daily", "interval")
+    with c3:
+        ctl("Chart")
+        ctype = segmented("Chart", ["Candles", "Line"], "Candles", "ctype")
+
+    o1, o2, o3 = st.columns([4, 4, 2])
+    overlays = o1.multiselect("Overlays", ["SMA 9", "SMA 20", "SMA 50", "SMA 200", "Bollinger bands"],
+                              default=["SMA 9", "SMA 20", "SMA 50"], key="overlays")
+    has_vol = float(daily["Volume"].iloc[-60:].sum()) > 0
+    panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"] if has_vol else ["RSI", "MACD"],
+                            default=["Volume", "RSI"] if has_vol else ["RSI"], key=f"panels_{has_vol}")
+    prepost = o3.checkbox("Extended hours", value=False, key="ext") if view == "Live" else False
+
+    if view == "Live":
+        refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels)
+    else:
+        history_view(ticker, daily, idx, ctype, rng, interval, overlays, panels)
+
     st.markdown("### Why this signal")
-    total_w = sum(weights.values()) or 1
-
-    def reading(f):
-        if not f.available:
-            return "n/a"
-        return "Bullish" if f.score > 0.5 else "Bearish" if f.score < -0.5 else "Neutral"
-
-    rows = [{"Factor": f.name, "Reading": reading(f), "Score (-2 to +2)": f.score if f.available else None,
-             "Weight": weights.get(f.name, 0) / total_w * 100, "Reasoning": f.reason} for f in res["factors"]]
-    show_df(pd.DataFrame(rows), column_config={
-        "Weight": st.column_config.NumberColumn(format="%.0f%%")})
+    refreshing(why_table)(ticker, weights)
 
     left, right = st.columns(2)
     with left:
         st.markdown("### Key stats")
+        pre = "" if idx else "$"
         d252 = daily.iloc[-252:]
         stats = {"52-week high": f"{pre}{d252['High'].max():,.2f}", "52-week low": f"{pre}{d252['Low'].min():,.2f}"}
         if not idx:
@@ -333,7 +499,7 @@ def render_backtest(ticker: str, weights: dict):
     st.markdown(f"Replays the **technical** part of the score on **{ticker}**: buy when the score reaches the buy "
                 "threshold, sell to cash when it drops to the sell threshold. Signals are read at the close and "
                 "filled at the *next* close.")
-    daily = load_daily(ticker)
+    daily = get_daily(ticker)
     if daily.empty or len(daily) < 260:
         st.error("Need at least about a year of history for this symbol.")
         return
@@ -404,47 +570,30 @@ def render_backtest(ticker: str, weights: dict):
 
 
 # ======================= TOP MOVERS =======================
-def render_movers(weights: dict):
-    st.markdown("Finds what's moving, drops illiquid names, then **ranks the movers by the analyzer's score** so you "
-                "can see which big moves have technical backing and which look stretched.")
-    u1, u2, u3 = st.columns([2, 2, 1])
-    uni = u1.selectbox("Universe", list(UNIVERSES), key="mv_uni")
-    mode = u2.selectbox("Rank movers by", MOVER_MODES, key="mv_mode")
-    top_n = u3.number_input("How many", 5, 50, 20, 5, key="mv_n")
-    custom = (st.text_input("Tickers (comma-separated)", "AAPL, NVDA, TSLA, AMD, PLTR", key="mv_custom")
-              if UNIVERSES[uni] == "custom" else "")
-    f1, f2, f3 = st.columns(3)
-    min_price = f1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="mv_price")
-    min_vol = f2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="mv_vol")
-    with_fund = f3.checkbox("Include fundamentals (slower)", value=False, key="mv_fund",
-                            help="Fetches P/E, growth and analyst data for each ranked stock.")
-
-    if st.button("Scan market", type="primary", key="mv_run"):
-        try:
-            with st.spinner("Downloading prices…"):
-                syms, note = get_universe(uni, custom)
-                if not syms:
-                    st.error("No valid tickers.")
-                else:
-                    data = load_universe_data(tuple(syms), "2y")
-                    bdf = load_daily("SPY")
-                    bench = bdf["Close"].iloc[-600:] if not bdf.empty else None
-                    ranked, stats = rank_movers(data, bench, mode, int(top_n), min_price, min_vol,
-                                                load_info if with_fund else None, weights)
-                    st.session_state["movers"] = {"df": ranked, "stats": stats, "note": note, "fund": with_fund}
-        except Exception as e:
-            st.session_state.pop("movers", None)
-            st.error(f"Scan failed: {e}")
-
-    mv = st.session_state.get("movers")
-    if not mv:
+def movers_results(weights: dict):
+    """Runs the scan with the last-submitted settings. Can auto-refresh."""
+    p = st.session_state.get("mv_params")
+    if not p:
         return
-    if mv["note"]:
-        st.warning(mv["note"])
-    s, ranked = mv["stats"], mv["df"]
-    st.caption(f"Screened {s['screened']} tickers · {s['skipped']} skipped (too little history, price or volume) · "
-               f"top {s['ranked']} movers ranked by score. "
-               + ("Scores include fundamentals." if mv["fund"] else "Scores are technical-only."))
+    try:
+        syms, note = cached_universe(p["uni"], p["custom"])
+        if not syms:
+            st.error("No valid tickers.")
+            return
+        data = load_universe_data(tuple(syms), "2y")
+        bdf = get_daily("SPY")
+        bench = bdf["Close"] if not bdf.empty else None
+        ranked, stats = rank_movers(data, bench, p["mode"], p["top_n"], p["min_price"], p["min_vol"],
+                                    load_info if p["fund"] else None, weights)
+    except Exception as e:
+        st.error(f"Scan failed: {e}")
+        return
+    st.session_state["mv_tickers"] = list(ranked["Ticker"]) if not ranked.empty else []
+    if note:
+        st.warning(note)
+    st.caption(f"Updated {now_et()} ET · screened {stats['screened']} tickers · {stats['skipped']} skipped (too "
+               f"little history, price or volume) · top {stats['ranked']} movers ranked by score. "
+               + ("Scores include fundamentals." if p["fund"] else "Scores are technical-only."))
     if ranked.empty:
         st.info("Nothing passed the filters. Try lowering the minimum price or volume.")
         return
@@ -457,29 +606,56 @@ def render_movers(weights: dict):
         "Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
         "Confidence": st.column_config.NumberColumn(format="%d%%"),
     })
-    p1, p2 = st.columns([1, 3])
-    pick = p1.selectbox("Open in analyzer", list(ranked["Ticker"]), key="mv_pick")
-    p2.write("")
-    p2.write("")
-    p2.button("Load into Analyze / Backtest tabs", on_click=set_ticker, args=(pick,), key="mv_load")
+
+
+def render_movers(weights: dict):
+    st.markdown("Finds what's moving, drops illiquid names, then **ranks the movers by the analyzer's score** so you "
+                "can see which big moves have technical backing and which look stretched.")
+    u1, u2, u3 = st.columns([2, 2, 1])
+    uni = u1.selectbox("Universe", list(UNIVERSES), key="mv_uni")
+    mode = u2.selectbox("Rank movers by", MOVER_MODES, key="mv_mode")
+    top_n = u3.number_input("How many", 5, 50, 20, 5, key="mv_n")
+    custom = (st.text_input("Tickers (comma-separated)", "AAPL, NVDA, TSLA, AMD, PLTR", key="mv_custom")
+              if UNIVERSES[uni] == "custom" else "")
+    f1, f2, f3, f4 = st.columns(4)
+    min_price = f1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="mv_price")
+    min_vol = f2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="mv_vol")
+    with_fund = f3.checkbox("Include fundamentals (slower)", value=False, key="mv_fund",
+                            help="Fetches P/E, growth and analyst data for each ranked stock.")
+    auto = f4.checkbox("Auto-refresh every minute", value=False, key="mv_auto")
+
+    if st.button("Scan market", type="primary", key="mv_run"):
+        st.session_state["mv_params"] = {"uni": uni, "custom": custom, "mode": mode, "top_n": int(top_n),
+                                         "min_price": min_price, "min_vol": min_vol, "fund": with_fund}
+    if "mv_params" not in st.session_state:
+        return
+    with st.spinner("Scanning…"):
+        refreshing(movers_results, every=60 if auto else 0)(weights)
+
+    tickers = st.session_state.get("mv_tickers", [])
+    if tickers:
+        p1, p2 = st.columns([1, 3])
+        pick = p1.selectbox("Open in analyzer", tickers, key="mv_pick")
+        p2.write("")
+        p2.write("")
+        p2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="mv_load")
     st.info("A big move usually has a news catalyst the score can't see (earnings, a deal, a downgrade). A high "
             "score on a stock that's up 15% today often means *the move already happened*; check the headlines "
             "and relative volume before acting.")
 
 
-# ---------- layout ----------
-tab_analyze, tab_backtest, tab_movers = st.tabs(["Analyze", "Backtest", "Top movers"])
-with tab_analyze:
+# ---------- main ----------
+if section == "Analyze":
     try:
         render_analyze(ticker, weights)
     except Exception as e:
         st.error(f"Could not load data: {e}")
-with tab_backtest:
+elif section == "Backtest":
     try:
         render_backtest(ticker, weights)
     except Exception as e:
         st.error(f"Backtest error: {e}")
-with tab_movers:
+else:
     render_movers(weights)
 
 st.caption("This tool scores public data with simple rules. It can't see the future, ignores your goals, taxes and "

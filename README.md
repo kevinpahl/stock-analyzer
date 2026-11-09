@@ -3,13 +3,13 @@
     pip install -r requirements.txt
     streamlit run app.py
 
-Tabs:
-- **Analyze**: Buy/Hold/Sell score for a stock, ETF or index (e.g. ^GSPC = S&P 500) with a chart you can set to
-  any range (1M to Max, or custom dates) and interval (daily, weekly, monthly, quarterly), plus 9/20/50/200-day
-  moving averages, Bollinger bands, volume, RSI and MACD.
-- **Backtest**: replays the technical score on past data vs buy & hold (next-close fills, trading costs,
-  in-sample / out-of-sample split, custom test period).
-- **Top movers**: scans gainers/losers/most-active (or your own list), keeps liquid names, ranks movers by score.
+Sections (switch at the top of the page):
+- **Analyze**: live price, day range and Buy/Hold/Sell signal that auto-refresh (sidebar: Off / 10 / 30 / 60 sec).
+  Chart view **Live** = intraday bars (1m to 1h, 1D to 1M, optional extended hours);
+  **History** = daily / weekly / monthly / quarterly bars over any range or custom dates.
+  Works for stocks, ETFs and indexes (e.g. ^GSPC). 9/20/50/200-day moving averages, Bollinger, volume, RSI, MACD.
+- **Backtest**: replays the technical score on past data vs buy & hold (custom test period, costs, in/out-of-sample).
+- **Top movers**: scans gainers/losers/most-active (or your own list), ranks movers by score; optional auto-refresh.
 
-Files: app.py (UI), analyzer.py (scoring), backtest.py, screener.py, charts.py, utils.py,
-.streamlit/config.toml (theme, optional).
+Files: app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, requirements.txt,
+.streamlit/config.toml (optional theme).

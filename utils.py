@@ -68,3 +68,23 @@ def preset_start(label: str, end: pd.Timestamp, first: pd.Timestamp) -> pd.Times
     if label == "YTD":
         return max(pd.Timestamp(year=end.year, month=1, day=1), first)
     return max(end - _OFFSETS[label], first)
+
+
+# ---- live / intraday ----
+INTRADAY = ["1m", "5m", "15m", "30m", "1h"]
+INTRADAY_MAX_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730}  # Yahoo's lookback limits
+LIVE_RANGES = {"1D": ("1d", 1), "5D": ("5d", 5), "1M": ("1mo", 30)}
+
+
+def live_params(interval: str, rng: str) -> tuple[str, str, str]:
+    """(yfinance period, bar size actually used, note). Coarsens the bars if Yahoo can't go back that far."""
+    period, days = LIVE_RANGES[rng]
+    note = ""
+    if days > INTRADAY_MAX_DAYS[interval]:
+        for alt in INTRADAY:
+            if INTRADAY_MAX_DAYS[alt] >= days:
+                note = (f"{interval} bars only go back {INTRADAY_MAX_DAYS[interval]} days, "
+                        f"so {alt} bars are used for this range.")
+                interval = alt
+                break
+    return period, interval, note

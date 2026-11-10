@@ -108,3 +108,38 @@ def trades_chart(close: pd.Series, trades: pd.DataFrame) -> go.Figure:
         fig.add_trace(go.Scatter(x=ex["Exit date"], y=ex["Exit price"], mode="markers", name="Sell",
                                  marker=dict(symbol="triangle-down", size=11, color=DOWN)))
     return _style(fig, 340)
+
+
+def regime_chart(hist: pd.Series) -> go.Figure:
+    """Market rating (0 = strongly bearish, 100 = strongly bullish) over time, with shaded zones."""
+    fig = go.Figure()
+    for lo, hi, col in [(0, 20, "rgba(153,27,27,0.14)"), (20, 40, "rgba(220,38,38,0.08)"),
+                        (40, 60, "rgba(245,158,11,0.08)"), (60, 80, "rgba(22,163,74,0.08)"),
+                        (80, 100, "rgba(10,125,51,0.14)")]:
+        fig.add_hrect(y0=lo, y1=hi, fillcolor=col, line_width=0)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist, mode="lines", name="Market rating",
+                             line=dict(color=BLUE, width=2.5)))
+    fig.update_yaxes(range=[0, 100])
+    return _style(fig, 300)
+
+
+def group_bars(df: pd.DataFrame, col: str) -> go.Figure:
+    d = df.dropna(subset=[col]).sort_values(col)
+    fig = go.Figure(go.Bar(x=d[col], y=d["Business type"], orientation="h",
+                           marker_color=[UP if v >= 0 else DOWN for v in d[col]],
+                           text=[f"{v:+.1f}%" for v in d[col]], textposition="outside", cliponaxis=False))
+    fig.update_xaxes(ticksuffix="%")
+    fig.update_layout(showlegend=False)
+    return _style(fig, max(320, 28 * len(d) + 80))
+
+
+def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str = "SPY") -> go.Figure:
+    fig = go.Figure(go.Scatter(x=df.index, y=df["Close"], name=name, line=dict(color=BLUE, width=2)))
+    if float(df["Volume"].sum()) > 0:
+        tp = (df["High"] + df["Low"] + df["Close"]) / 3
+        vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
+        fig.add_trace(go.Scatter(x=df.index, y=vwap, name="VWAP", line=dict(color="#f59e0b", width=1.3, dash="dot")))
+    if prev_close:
+        fig.add_hline(y=prev_close, line_dash="dash", line_color="rgba(128,128,128,0.6)",
+                      annotation_text="Prev close", annotation_position="top left")
+    return _style(fig, 300, [dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])

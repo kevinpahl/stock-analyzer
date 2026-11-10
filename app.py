@@ -1,23 +1,28 @@
 """Stock Analyzer: run with `streamlit run app.py`"""
 from __future__ import annotations
 
+import hashlib
+import re
+
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "3.0"
+APP_VERSION = "5.0"
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
     from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
     from backtest import run_backtest, split_metrics
-    from charts import equity_chart, price_chart, trades_chart
+    from charts import (equity_chart, group_bars, intraday_chart, price_chart, regime_chart,
+                        trades_chart)
+    from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_index, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
     st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
-             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, requirements.txt.")
+             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, requirements.txt.")
     st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
@@ -55,7 +60,7 @@ VERDICT_COLORS = {"STRONG BUY": "#0a7d33", "BUY": "#16a34a", "HOLD": "#b8860b",
                   "SELL": "#dc2626", "STRONG SELL": "#991b1b"}
 LIVE_TTL = 20  # seconds: how long short-lived market data is reused before asking Yahoo again
 REFRESH_OPTIONS = {"Off": 0, "10 sec": 10, "30 sec": 30, "60 sec": 60}
-SECTIONS = ["Analyze", "Backtest", "Top movers"]
+SECTIONS = ["Analyze", "Favorites", "Market pulse", "Backtest", "Top movers"]
 
 
 # ---------- small UI helpers (written to work across Streamlit versions) ----------
@@ -212,8 +217,22 @@ def cached_universe(label: str, custom: str):
     return get_universe(label, custom)
 
 
+@st.cache_data(ttl=60, show_spinner="Scanning about 200 stocks and ETFs (the first scan can take up to a minute)…")
+def load_pulse(weights_key: tuple):
+    return compute_pulse(download_history(all_symbols(), "2y"), dict(weights_key))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_favorites(symbols: tuple, weights_key: tuple):
+    data = download_history(list(symbols), "2y")
+    stats = symbol_stats(data, dict(weights_key), include_indexes=True)
+    have = set(stats.index) if not stats.empty else set()
+    return stats, [s for s in symbols if s not in have]
+
+
 def refresh_now():
-    for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe):
+    for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe,
+               load_pulse, load_favorites):
         getattr(fn, "clear", lambda: None)()
 
 
@@ -243,12 +262,89 @@ def open_in_analyzer(sym: str):
     st.session_state["section"] = "Analyze"
 
 
+# ---------- favorites (saved in the page address, so every visitor has their own list) ----------
+MAX_FAVS = 50
+_SYM_RE = re.compile(r"^\^?[A-Z0-9]{1,8}(?:[.\-=][A-Z0-9]{1,4})?$")
+
+
+def parse_symbols(text) -> list[str]:
+    if isinstance(text, (list, tuple)):
+        text = ",".join(text)
+    out: list[str] = []
+    for tok in re.split(r"[\s,;]+", str(text or "").upper()):
+        if tok and _SYM_RE.match(tok) and tok not in out:
+            out.append(tok)
+    return out
+
+
+def save_favorites(favs: list[str]):
+    favs = favs[:MAX_FAVS]
+    st.session_state["favorites"] = favs
+    try:  # mirror into the URL (?fav=AAPL,NVDA) so a bookmark brings the list back
+        if favs:
+            st.query_params["fav"] = ",".join(favs)
+        elif "fav" in st.query_params:
+            del st.query_params["fav"]
+    except Exception:
+        pass
+
+
+def add_favorites(syms):
+    save_favorites(list(dict.fromkeys(st.session_state["favorites"] + parse_symbols(syms))))
+
+
+def remove_favorite(sym: str):
+    save_favorites([s for s in st.session_state["favorites"] if s != sym])
+    st.session_state.pop("fav_pick", None)
+
+
+def toggle_current_favorite():
+    sym = st.session_state["ticker"].upper().strip()
+    if sym in st.session_state["favorites"]:
+        remove_favorite(sym)
+    else:
+        add_favorites([sym])
+
+
+def add_from_box():
+    add_favorites(st.session_state.get("fav_add", ""))
+    st.session_state["fav_add"] = ""
+
+
+def apply_list(key: str):
+    save_favorites(parse_symbols(st.session_state.get(key, "")))
+
+
+def clear_favorites():
+    save_favorites([])
+
+
+def open_favorite():
+    sym = st.session_state.get("fav_menu")
+    if sym and sym != "—":
+        open_in_analyzer(sym)
+    st.session_state["fav_menu"] = "—"
+
+
+if "favorites" not in st.session_state:
+    try:
+        st.session_state["favorites"] = parse_symbols(st.query_params.get("fav", ""))[:MAX_FAVS]
+    except Exception:
+        st.session_state["favorites"] = []
+
+
 with st.sidebar:
     st.markdown("### Symbol")
     st.text_input("Ticker or index", key="ticker",
                   help="Stocks (AAPL), ETFs (SPY) or indexes (^GSPC = S&P 500, ^NDX = Nasdaq-100).")
+    cur = st.session_state["ticker"].upper().strip()
+    is_fav = cur in st.session_state["favorites"]
+    st.button("★ Remove from favorites" if is_fav else "☆ Add to favorites", on_click=toggle_current_favorite,
+              key="fav_toggle", disabled=not cur)
     st.selectbox("Quick picks", list(QUICK_PICKS), key="quick", on_change=apply_quick)
-    ticker = st.session_state["ticker"].upper().strip()
+    if st.session_state["favorites"]:
+        st.selectbox("★ Favorites", ["—"] + st.session_state["favorites"], key="fav_menu", on_change=open_favorite)
+    ticker = cur
     st.markdown("### Live data")
     refresh_label = st.selectbox("Auto-refresh", list(REFRESH_OPTIONS), index=2, key="refresh")
     st.button("Refresh now", on_click=refresh_now, key="refresh_now")
@@ -407,6 +503,8 @@ def render_analyze(ticker: str, weights: dict):
     info, news = load_meta(ticker)
     name = INDEX_NAMES.get(ticker) or info.get("longName") or info.get("shortName") or ticker
     badge = "<span class='badge'>INDEX</span>" if idx else ""
+    if ticker in st.session_state["favorites"]:
+        badge += "<span class='badge'>★ FAVORITE</span>"
     st.markdown(f"<div class='sym-title'><span class='name'>{name}</span>"
                 f"<span class='tick'>{ticker}</span>{badge}</div>", unsafe_allow_html=True)
     if idx:
@@ -634,14 +732,304 @@ def render_movers(weights: dict):
 
     tickers = st.session_state.get("mv_tickers", [])
     if tickers:
-        p1, p2 = st.columns([1, 3])
+        p1, p2, p3 = st.columns([2, 1, 1])
         pick = p1.selectbox("Open in analyzer", tickers, key="mv_pick")
-        p2.write("")
-        p2.write("")
+        for col in (p2, p3):
+            col.write("")
+            col.write("")
         p2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="mv_load")
+        p3.button("☆ Add to favorites", on_click=add_favorites, args=([pick],), key="mv_fav")
     st.info("A big move usually has a news catalyst the score can't see (earnings, a deal, a downgrade). A high "
             "score on a stock that's up 15% today often means *the move already happened*; check the headlines "
             "and relative volume before acting.")
+
+
+# ======================= MARKET PULSE =======================
+REGIME_COLORS = {"STRONGLY BULLISH": "#0a7d33", "BULLISH": "#16a34a", "NEUTRAL / MIXED": "#b8860b",
+                 "BEARISH": "#dc2626", "STRONGLY BEARISH": "#991b1b"}
+VOL_COLORS = {"LOW": "#16a34a", "NORMAL": "#2563eb", "ELEVATED": "#d97706", "HIGH": "#dc2626", "EXTREME": "#991b1b"}
+PULSE_REFRESH = {"Off": 0, "1 min": 60, "5 min": 300}
+PULSE_SORTS = {"Trend rating": ("Rating", False), "Biggest 1D gain": ("1d %", False),
+               "Biggest 1D loss": ("1d %", True), "Unusual volume": ("Rel. volume", False),
+               "Most volatile": ("Volatility %", False)}
+
+
+def pulse_results(wkey: tuple, selected: list, flt: dict):
+    """Everything on the Market pulse page. Can auto-refresh."""
+    try:
+        p = load_pulse(wkey)
+    except Exception as e:
+        st.error(f"The market scan failed: {e}")
+        return
+    reg, vol, stocks = p["regime"], p["vol"], p["stocks"]
+    if not reg.get("ok"):
+        st.error("Not enough market data came back from Yahoo to rate the market right now. "
+                 "Try 'Refresh now' in the sidebar in a minute.")
+        return
+    nan = float("nan")
+
+    # --- headline cards ---
+    arrow = {"Improving": "▲", "Deteriorating": "▼", "Stable": "►"}.get(reg["direction"], "")
+    delta_txt = "" if reg["delta"] != reg["delta"] else f" ({reg['delta']:+.1f} vs 5 sessions ago)"
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        f"<div class='card'><div class='lbl'>Market rating</div>"
+        f"<div class='pill' style='background:{REGIME_COLORS[reg['label']]}'>{reg['label']}</div>"
+        f"<div class='gauge'><div class='dot' style='left:{reg['pct']}%'></div></div>"
+        f"<div class='gauge-labels'><span>Bearish</span><span>Neutral</span><span>Bullish</span></div>"
+        f"<div class='muted' style='margin-top:6px'>{reg['pct']}/100 · {arrow} {reg['direction']}{delta_txt}</div></div>",
+        unsafe_allow_html=True)
+    if vol.get("ok"):
+        vix_txt = (f"VIX {vol['vix']:.1f} ({vol['vix_chg']:+.1%} today)" if vol["vix"] is not None else "VIX n/a")
+        rv_txt = f"S&P 500 realized volatility {vol['realized']:.0f}%/yr" if vol["realized"] is not None else ""
+        c2.markdown(
+            f"<div class='card'><div class='lbl'>Volatility</div>"
+            f"<div class='pill' style='background:{VOL_COLORS[vol['level']]}'>{vol['level']}</div>"
+            f"<div class='muted'>{vix_txt}<br>{rv_txt}</div></div>", unsafe_allow_html=True)
+    b = reg["breadth"]
+    highs, lows = int(stocks["new_high"].sum()), int(stocks["new_low"].sum())
+    c3.markdown(
+        f"<div class='card'><div class='lbl'>Breadth</div>"
+        f"<div class='big'>{b.get('p50', nan):.0f}% above 50-day</div>"
+        f"<div class='muted'>{b.get('p200', nan):.0f}% above 200-day · {b.get('padv', nan):.0f}% up today<br>"
+        f"{highs} new 20-day highs · {lows} new lows</div></div>", unsafe_allow_html=True)
+
+    # --- volatility warnings ---
+    if vol.get("ok"):
+        msg = "\n".join(f"- {w}" for w in vol["warnings"])
+        if vol["idx"] >= 3:
+            st.error(f"**Volatility is {vol['level']}.** Expect larger and faster price swings than usual.\n{msg}")
+        elif vol["idx"] == 2 or vol["warnings"]:
+            st.warning(f"**Volatility is {vol['level']}.**\n{msg}")
+        else:
+            st.success("**Volatility is calm.** No warnings right now.")
+
+    # --- trend over time + today's tape ---
+    a, bcol = st.columns(2)
+    with a:
+        st.markdown("#### Market rating, last 3 months")
+        show_chart(regime_chart(reg["history"]))
+    with bcol:
+        st.markdown("#### S&P 500 (SPY) today")
+        try:
+            idf = load_intraday("SPY", "5m", "1d", False)
+            if len(idf) >= 2:
+                show_chart(intraday_chart(idf, load_quote("SPY").get("prev")))
+            else:
+                st.info("No intraday bars yet. The market may be closed.")
+        except Exception:
+            st.info("Intraday data isn't available right now.")
+
+    st.markdown("#### What's driving the rating")
+    total_w = sum(REGIME_WEIGHTS.values())
+
+    def reading(c):
+        if not c["available"]:
+            return "n/a"
+        return "Bullish" if c["score"] > 0.5 else "Bearish" if c["score"] < -0.5 else "Neutral"
+
+    show_df(pd.DataFrame([{"Factor": c["Factor"], "Reading": reading(c), "Score (-2 to +2)": c["score"],
+                           "Weight": c["weight"] / total_w * 100, "Detail": c["reason"]}
+                          for c in reg["components"]]),
+            column_config={"Weight": st.column_config.NumberColumn(format="%.0f%%")})
+
+    # --- business types ---
+    st.markdown("### Business types")
+    g = p["groups"]
+    g = g[g["Business type"].isin(selected)] if not g.empty else g
+    if g.empty:
+        st.info("Select at least one business type above.")
+    else:
+        ctl("Heat map timeframe")
+        tf = segmented("Heat map timeframe", ["1D", "5D", "1M", "3M"], "1D", "pulse_tf")
+        show_chart(group_bars(g, tf))
+        show_df(g[["Business type", "Signal", "Rating", "1D", "5D", "1M", "3M", "% above 50-day", "% up today",
+                   "Volatility %", "Leader today", "Laggard today", "ETF"]].sort_values("Rating", ascending=False),
+                column_config={
+                    "Rating": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+                    "1D": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "5D": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "1M": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "3M": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "% above 50-day": st.column_config.NumberColumn(format="%.0f%%"),
+                    "% up today": st.column_config.NumberColumn(format="%.0f%%"),
+                    "Volatility %": st.column_config.NumberColumn(format="%.0f%%")})
+
+    # --- stock scanner ---
+    st.markdown("### Stock scanner")
+    s = stocks.copy()
+    s["Business types"] = s["Ticker"].map(lambda t: ", ".join(GROUP_OF.get(t, [])))
+    s = s[s["Ticker"].map(lambda t: any(x in selected for x in GROUP_OF.get(t, [])))]
+    total = len(s)
+    s["Signal"] = s["Score"].map(signal_label)
+    s = s[(s["Price"] >= flt["min_price"]) & (s["avg_vol"] >= flt["min_vol"])]
+    if flt["signal"] != "All":
+        s = s[s["Signal"] == flt["signal"]]
+    if flt["unusual"]:
+        s = s[s["Rel. volume"] >= 1.5]
+    if flt["hide_vol"]:
+        s = s[s["Volatility %"] < flt["vol_limit"]]
+    if flt["search"]:
+        q = flt["search"].upper()
+        s = s[s["Ticker"].str.contains(q, regex=False)]
+    col, asc = PULSE_SORTS[flt["sort"]]
+    s = s.sort_values(col, ascending=asc, na_position="last").head(flt["limit"])
+    if s.empty:
+        st.info("No stocks match these filters.")
+        st.session_state["pulse_tickers"] = []
+    else:
+        s["Flags"] = s.apply(lambda r: flags(r, flt["vol_limit"]), axis=1)
+        st.session_state["pulse_tickers"] = list(s["Ticker"])
+        show_df(s[["Ticker", "Business types", "Signal", "Rating", "Price", "1d %", "5d %", "1m %", "Rel. volume",
+                   "RSI", "Volatility %", "Flags"]],
+                column_config={
+                    "Rating": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+                    "Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "1d %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "5d %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "1m %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+                    "RSI": st.column_config.NumberColumn(format="%.0f"),
+                    "Volatility %": st.column_config.NumberColumn(format="%.0f%%")})
+    st.caption(f"Updated {now_et()} ET · showing {len(s)} of {total} stocks in the selected business types · "
+               f"scanned {p['loaded']} of {p['requested']} symbols.")
+
+
+def render_pulse(weights: dict):
+    st.markdown("Scans about 200 stocks and ETFs and rates whether the market is trending **bullish or bearish**, "
+                "warns when **volatility** is rising, and breaks the market out by **business type**. The market-wide "
+                "rating always uses the full scan; the filters below only change which business types and stocks "
+                "are shown.")
+    f1, f2 = st.columns([5, 1.5])
+    selected = f1.multiselect("Business types", list(GROUPS), default=list(GROUPS), key="pulse_groups")
+    refresh = f2.selectbox("Auto-refresh", list(PULSE_REFRESH), index=1, key="pulse_refresh")
+    g1, g2, g3 = st.columns([3, 2, 2])
+    with g1:
+        ctl("Signal")
+        sig = segmented("Signal", ["All", "Bullish", "Neutral", "Bearish"], "All", "pulse_sig")
+    sort = g2.selectbox("Sort stocks by", list(PULSE_SORTS), key="pulse_sort")
+    search = g3.text_input("Find ticker", key="pulse_search").strip()
+    with st.expander("More filters"):
+        m1, m2, m3, m4 = st.columns(4)
+        min_price = m1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="pulse_price")
+        min_vol = m2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="pulse_vol")
+        vol_limit = m3.slider("Flag volatility above (%/yr)", 20, 150, 60, 5, key="pulse_vlim")
+        limit = m4.number_input("Rows to show", 10, 200, 50, 10, key="pulse_limit")
+        h1, h2 = st.columns(2)
+        unusual = h1.checkbox("Only unusual volume (1.5x or more)", value=False, key="pulse_unusual")
+        hide_vol = h2.checkbox("Hide high-volatility stocks", value=False, key="pulse_hide")
+    flt = {"signal": sig, "sort": sort, "search": search, "min_price": min_price, "min_vol": min_vol,
+           "vol_limit": vol_limit, "limit": int(limit), "unusual": unusual, "hide_vol": hide_vol}
+
+    wkey = tuple(sorted(weights.items()))
+    refreshing(pulse_results, every=PULSE_REFRESH[refresh])(wkey, selected, flt)
+
+    tickers = st.session_state.get("pulse_tickers", [])
+    if tickers:
+        p1, p2, p3 = st.columns([2, 1, 1])
+        pick = p1.selectbox("Open in analyzer", tickers, key="pulse_pick")
+        for col in (p2, p3):
+            col.write("")
+            col.write("")
+        p2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="pulse_load")
+        p3.button("☆ Add to favorites", on_click=add_favorites, args=([pick],), key="pulse_fav")
+    st.info("The rating is rule-based: it combines index trends, how many stocks are above their moving averages, "
+            "the VIX and sector rotation, using Yahoo's data on a curated set of about 200 stocks and ETFs, not the "
+            "whole market. It describes current conditions. It does not predict what happens next, and "
+            "the business-type lists are examples you can edit in market.py.")
+
+
+# ======================= FAVORITES =======================
+FAV_REFRESH = {"Off": 0, "30 sec": 30, "1 min": 60, "5 min": 300}
+FAV_SORTS = {"Saved order": ("_pos", True), "Biggest 1D gain": ("1d %", False),
+             "Biggest 1D loss": ("1d %", True), "Trend rating": ("Rating", False)}
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_favorites(symbols: tuple, weights_key: tuple):
+    data = download_history(list(symbols), "2y")
+    stats = symbol_stats(data, dict(weights_key), include_indexes=True)
+    have = set(stats.index) if not stats.empty else set()
+    return stats, [s for s in symbols if s not in have]
+
+
+def favorites_results(wkey: tuple, favs: list, order: str):
+    """The watchlist table. Can auto-refresh."""
+    try:
+        stats, missing = load_favorites(tuple(favs), wkey)
+    except Exception as e:
+        st.error(f"Couldn't load your favorites: {e}")
+        return
+    if stats.empty:
+        st.warning("No data came back for your favorites. Check the symbols, or try 'Refresh now' in the sidebar.")
+        return
+    s = stats.reset_index(drop=True)
+    s["Signal"] = s["Score"].map(signal_label)
+    s["Flags"] = s.apply(lambda r: flags(r), axis=1)
+    pos = {t: i for i, t in enumerate(favs)}
+    s["_pos"] = s["Ticker"].map(pos)
+    key, asc = FAV_SORTS[order]
+    s = s.sort_values(key, ascending=asc, na_position="last")
+    n_bull, n_bear = int((s["Signal"] == "Bullish").sum()), int((s["Signal"] == "Bearish").sum())
+    st.caption(f"Updated {now_et()} ET · {n_bull} bullish · {len(s) - n_bull - n_bear} neutral/n-a · {n_bear} bearish · "
+               f"average move today {s['1d %'].mean():+.2f}%. Signals here use price technicals only; open a symbol "
+               "in Analyze for the full signal.")
+    show_df(s[["Ticker", "Signal", "Rating", "Price", "1d %", "5d %", "1m %", "3m %", "Rel. volume", "RSI",
+               "Volatility %", "Flags"]],
+            column_config={
+                "Rating": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+                "Price": st.column_config.NumberColumn(format="%.2f"),
+                "1d %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "5d %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "1m %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "3m %": st.column_config.NumberColumn(format="%+.1f%%"),
+                "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+                "RSI": st.column_config.NumberColumn(format="%.0f"),
+                "Volatility %": st.column_config.NumberColumn(format="%.0f%%")})
+    if missing:
+        st.warning("No data for: " + ", ".join(missing) + ". Check the spelling (indexes start with ^).")
+
+
+def render_favorites(weights: dict):
+    favs = st.session_state["favorites"]
+    st.markdown("Save the symbols you follow and see them all in one live table. Add one from the sidebar while "
+                "viewing it, or type symbols below.")
+    a1, a2 = st.columns([5, 1])
+    a1.text_input("Add symbols (comma-separated)", key="fav_add", placeholder="e.g. NVDA, XOM, ^GSPC")
+    a2.write("")
+    a2.write("")
+    a2.button("Add", on_click=add_from_box, key="fav_add_btn")
+    note = ("Your favorites are saved in this page's web address (the part after ?fav=). **Bookmark the page** after "
+            "adding them and they'll be there next time, on any device. Opening the plain app link starts with an "
+            "empty list; use 'Manage / back up' below to copy or restore your list.")
+    if not favs:
+        st.info("No favorites yet. Add symbols above, or use ☆ Add to favorites in the sidebar.")
+        st.button("Add examples (AAPL, MSFT, NVDA, SPY)", on_click=add_favorites,
+                  args=(["AAPL", "MSFT", "NVDA", "SPY"],), key="fav_examples")
+        st.caption(note)
+        return
+
+    o1, o2 = st.columns([2, 1])
+    order = o1.selectbox("Sort by", list(FAV_SORTS), key="fav_sort")
+    refresh = o2.selectbox("Auto-refresh", list(FAV_REFRESH), index=2, key="fav_refresh")
+    refreshing(favorites_results, every=FAV_REFRESH[refresh])(tuple(sorted(weights.items())), list(favs), order)
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    pick = c1.selectbox("Selected favorite", favs, key="fav_pick")
+    for col in (c2, c3):
+        col.write("")
+        col.write("")
+    c2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="fav_open")
+    c3.button("★ Remove", on_click=remove_favorite, args=(pick,), key="fav_remove")
+
+    with st.expander("Manage / back up your list"):
+        tkey = "fav_text_" + hashlib.md5(",".join(favs).encode()).hexdigest()[:8]
+        st.text_area("Your list (copy it to back it up, or paste a list and press Apply)",
+                     value=", ".join(favs), key=tkey, height=80)
+        m1, m2 = st.columns(2)
+        m1.button("Apply list", on_click=apply_list, args=(tkey,), key="fav_apply")
+        m2.button("Clear all favorites", on_click=clear_favorites, key="fav_clear")
+    st.caption(note)
 
 
 # ---------- main ----------
@@ -650,6 +1038,16 @@ if section == "Analyze":
         render_analyze(ticker, weights)
     except Exception as e:
         st.error(f"Could not load data: {e}")
+elif section == "Favorites":
+    try:
+        render_favorites(weights)
+    except Exception as e:
+        st.error(f"Favorites error: {e}")
+elif section == "Market pulse":
+    try:
+        render_pulse(weights)
+    except Exception as e:
+        st.error(f"Market pulse error: {e}")
 elif section == "Backtest":
     try:
         render_backtest(ticker, weights)

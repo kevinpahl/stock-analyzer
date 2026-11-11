@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
-import os
 import re
-import types
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.0"
+APP_VERSION = "5.0"
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -19,16 +16,13 @@ try:
     from backtest import run_backtest, split_metrics
     from charts import (equity_chart, group_bars, intraday_chart, price_chart, regime_chart,
                         trades_chart)
-    from ai_chat import (DEFAULT_MODEL_LABEL, MODELS, TOOL_SCHEMAS, build_system_prompt, compact_turn,
-                         friendly_error, make_client, run_conversation)
-    from chat_tools import build_impls
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_index, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
     st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
-             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, ai_chat.py, chat_tools.py, requirements.txt.")
+             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, requirements.txt.")
     st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
@@ -557,11 +551,6 @@ def render_analyze(ticker: str, weights: dict):
     else:
         history_view(ticker, daily, idx, ctype, rng, interval, overlays, panels)
 
-    try:
-        render_chat(ticker, name, weights)
-    except Exception as e:
-        st.error(f"The AI chat hit a problem: {e}")
-
     st.markdown("### Why this signal")
     refreshing(why_table)(ticker, weights)
 
@@ -948,145 +937,6 @@ def render_pulse(weights: dict):
             "the VIX and sector rotation, using Yahoo's data on a curated set of about 200 stocks and ETFs, not the "
             "whole market. It describes current conditions. It does not predict what happens next, and "
             "the business-type lists are examples you can edit in market.py.")
-
-
-# ======================= AI CHAT =======================
-CHAT_MAX_QUESTIONS = 40  # per browser session; override with the CHAT_MAX_QUESTIONS secret
-
-
-def get_secret(name: str, default=None):
-    try:
-        v = st.secrets.get(name)
-    except Exception:
-        v = None
-    return v or os.environ.get(name) or default
-
-
-def chat_api_key():
-    return (st.session_state.get("chat_user_key") or "").strip() or get_secret("ANTHROPIC_API_KEY")
-
-
-def queue_prompt(text: str):
-    st.session_state["chat_pending"] = text
-
-
-def clear_chat():
-    st.session_state["chat_ui"] = []
-    st.session_state["chat_turns"] = []
-
-
-def try_unlock(password):
-    tried = (st.session_state.get("chat_pw_try") or "").encode()
-    if hmac.compare_digest(tried, str(password).encode()):
-        st.session_state["chat_unlocked"] = True
-        st.session_state["chat_pw_bad"] = False
-    else:
-        st.session_state["chat_pw_bad"] = True
-    st.session_state["chat_pw_try"] = ""
-
-
-def chat_impls(weights: dict) -> dict:
-    wkey = tuple(sorted(weights.items()))
-    L = types.SimpleNamespace(
-        get_daily=get_daily, load_quote=load_quote, load_meta=load_meta, get_bench=get_bench,
-        load_pulse=lambda: load_pulse(wkey), load_overview=load_overview,
-        load_favorites=lambda favs: load_favorites(favs, wkey),
-        favorites=lambda: list(st.session_state["favorites"]), now_et=now_et)
-    return build_impls(L, weights)
-
-
-def describe_call(name: str, args: dict) -> str:
-    sym = (args or {}).get("symbol", "")
-    return {"get_quote": f"Checking the live quote for {sym}", "get_price_history": f"Pulling {sym} price history",
-            "get_stock_analysis": f"Analyzing {sym}", "get_market_overview": "Reading market conditions",
-            "get_sector_performance": "Comparing business types", "get_top_movers": "Scanning top movers",
-            "get_news": f"Fetching news for {sym}", "get_favorites_status": "Checking your favorites"}.get(name, name)
-
-
-def render_chat(ticker: str, name: str, weights: dict):
-    ss = st.session_state
-    ss.setdefault("chat_ui", [])
-    ss.setdefault("chat_turns", [])
-    ss.setdefault("chat_count", 0)
-    st.markdown("### Ask the AI analyst")
-    st.caption("Ask about this stock, the market, volatility, sectors or your favorites. Answers use this app's live "
-               "data (as fresh as Yahoo provides it). General information, not financial advice.")
-    with st.expander("API key and settings", expanded=not chat_api_key()):
-        st.text_input("Your Anthropic API key (optional)", type="password", key="chat_user_key",
-                      help="Only kept for this browser session. Not needed if the app owner already added a key.")
-        st.selectbox("Model", list(MODELS), index=list(MODELS).index(DEFAULT_MODEL_LABEL), key="chat_model")
-    key = chat_api_key()
-    if not key:
-        st.info("The AI chat needs an Anthropic API key. Paste yours in the box above, or (if you run this app) add "
-                "`ANTHROPIC_API_KEY` to the app's Secrets.")
-        return
-    pw = get_secret("CHAT_PASSWORD")
-    if pw and not (ss.get("chat_user_key") or "").strip() and not ss.get("chat_unlocked"):
-        p1, p2 = st.columns([3, 1])
-        p1.text_input("Chat password", type="password", key="chat_pw_try")
-        p2.write("")
-        p2.write("")
-        p2.button("Unlock", on_click=try_unlock, args=(pw,), key="chat_unlock")
-        if ss.get("chat_pw_bad"):
-            st.error("That password isn't right.")
-        return
-
-    max_q = int(get_secret("CHAT_MAX_QUESTIONS", CHAT_MAX_QUESTIONS))
-    chips = [f"Summarize {ticker} right now", f"What are the main risks for {ticker}?",
-             "Is the market bullish or bearish today?", "Which sectors are strongest this week?"]
-    for i, (col, text) in enumerate(zip(st.columns(len(chips)), chips)):
-        col.button(text, key=f"chip_{i}", on_click=queue_prompt, args=(text,))
-
-    box = st.container(height=460)
-    with box:
-        if not ss["chat_ui"]:
-            st.caption("No messages yet. Try a suggestion above, or type a question below.")
-        for m in ss["chat_ui"]:
-            with st.chat_message(m["role"]):
-                st.markdown(m["content"])
-                if m.get("tools"):
-                    st.caption("Data used: " + " · ".join(m["tools"]))
-    with st.container():
-        typed = st.chat_input(f"Ask about {ticker}, the market, volatility, sectors…", key="chat_input")
-    f1, f2 = st.columns([4, 1])
-    f1.caption(f"Questions this session: {ss['chat_count']} of {max_q}")
-    f2.button("Clear chat", on_click=clear_chat, key="chat_clear")
-
-    prompt = (ss.pop("chat_pending", None) or typed or "").strip()[:1500]
-    if not prompt:
-        return
-    if ss["chat_count"] >= max_q:
-        st.warning(f"You've reached the limit of {max_q} questions for this session. Reload the page to start again.")
-        return
-
-    ss["chat_ui"].append({"role": "user", "content": prompt})
-    with box:
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            status = st.status("Thinking…", expanded=False)
-            try:
-                history = [m for turn in ss["chat_turns"][-6:] for m in turn]
-                now_txt = f"{pd.Timestamp.now(tz='America/New_York'):%A, %B %d, %Y, %H:%M} ET"
-                out = run_conversation(
-                    make_client(key), MODELS.get(ss.get("chat_model"), MODELS[DEFAULT_MODEL_LABEL]),
-                    build_system_prompt(now_txt, ticker, name, ss["favorites"]),
-                    history + [{"role": "user", "content": prompt}], TOOL_SCHEMAS, chat_impls(weights),
-                    on_tool=lambda n, a: status.write(describe_call(n, a) + "…"))
-            except Exception as e:
-                status.update(label="Something went wrong", state="error")
-                ss["chat_ui"].pop()  # drop the unanswered question so it can be asked again
-                st.error(friendly_error(e))
-                return
-            used = list(dict.fromkeys(describe_call(t["tool"], t["input"]) for t in out["tool_log"]))
-            status.update(label=f"Used {len(used)} live data lookup{'s' if len(used) != 1 else ''}" if used
-                          else "Answered", state="complete")
-            st.markdown(out["text"])
-            if used:
-                st.caption("Data used: " + " · ".join(used))
-    ss["chat_ui"].append({"role": "assistant", "content": out["text"], "tools": used})
-    ss["chat_turns"] = (ss["chat_turns"] + [compact_turn(prompt, out["text"])])[-12:]
-    ss["chat_count"] += 1
 
 
 # ======================= FAVORITES =======================

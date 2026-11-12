@@ -12,7 +12,8 @@ from analyzer import DEFAULT_WEIGHTS, rsi, technical_score_series
 from screener import BUILTIN
 
 INDEXES = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^RUT": "Russell 2000", "^DJI": "Dow", "^VIX": "VIX"}
-CORE_ETFS = ["SPY", "QQQ", "IWM"]
+CORE_ETFS = ["SPY", "QQQ", "IWM", "DIA"]
+INDEX_ETFS = {"SPY": "S&P 500 (SPY)", "QQQ": "Nasdaq-100 (QQQ)", "DIA": "Dow (DIA)", "IWM": "Russell 2000 (IWM)"}
 OFFENSIVE = ["XLK", "XLY", "XLC"]   # tech, consumer discretionary, communications
 DEFENSIVE = ["XLP", "XLU", "XLV"]   # staples, utilities, health care
 
@@ -115,6 +116,8 @@ def symbol_stats(data: dict[str, pd.DataFrame], weights: dict | None = None,
             "new_high": bool(px >= prior.max()), "new_low": bool(px <= prior.min()),
             "pos52": float((px - lo) / (hi - lo)) if hi > lo else np.nan,
             "avg_vol": avg_vol,
+            "Volume": float(v.iloc[-1]), "dollar_vol": px * float(v.iloc[-1]),
+            "avg_dollar_vol": float((c * v).iloc[-21:-1].mean()),
         })
     df = pd.DataFrame(rows)
     return df.set_index("Ticker", drop=False) if not df.empty else df
@@ -327,10 +330,50 @@ def group_table(stats: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def compute_pulse(data: dict[str, pd.DataFrame], weights: dict | None = None) -> dict:
+# ---------------------------------------------------------------- volume flow
+_CURVE_MIN = [0, 30, 60, 120, 180, 240, 300, 360, 390]               # minutes since the 9:30 ET open
+_CURVE_CUM = [0, 0.14, 0.22, 0.37, 0.49, 0.60, 0.72, 0.88, 1.0]      # rough share of a day's volume traded so far
+
+
+def session_fraction(now: pd.Timestamp, last_bar: pd.Timestamp) -> float:
+    """Approximate share of a normal day's volume that has traded so far (naive Eastern times).
+    1.0 when the session is over or the newest bar isn't today's."""
+    if last_bar.normalize() != now.normalize() or now.weekday() >= 5:
+        return 1.0
+    mins = now.hour * 60 + now.minute - (9 * 60 + 30)
+    if mins <= 0 or mins >= 390:
+        return 1.0
+    return max(0.05, float(np.interp(mins, _CURVE_MIN, _CURVE_CUM)))  # floor avoids absurd ratios at the open
+
+
+def volume_breakdown(stats: pd.DataFrame, frac: float = 1.0) -> dict:
+    """Dollars and shares traded today vs the 20-day average, by business type and by index ETF.
+    Each stock is counted once, in the first business type it is listed under, so the steps add up."""
+    empty = pd.DataFrame(columns=["name", "n", "dollars", "avg_dollars", "shares", "avg_shares"])
+    if stats.empty:
+        return {"industries": empty, "indexes": empty, "frac": frac}
+    stocks = stats[~stats.index.isin(ETF_SET)].copy()
+    stocks["group"] = stocks["Ticker"].map(lambda t: (GROUP_OF.get(t) or ["Other large caps"])[0])
+    agg = stocks.groupby("group").agg(n=("Ticker", "count"), dollars=("dollar_vol", "sum"),
+                                      avg_dollars=("avg_dollar_vol", "sum"), shares=("Volume", "sum"),
+                                      avg_shares=("avg_vol", "sum")).reset_index().rename(columns={"group": "name"})
+    etf = stats[stats.index.isin(INDEX_ETFS)].copy()
+    idx = pd.DataFrame({"name": [INDEX_ETFS[t] for t in etf.index], "n": 1, "dollars": etf["dollar_vol"].to_numpy(),
+                        "avg_dollars": etf["avg_dollar_vol"].to_numpy(), "shares": etf["Volume"].to_numpy(),
+                        "avg_shares": etf["avg_vol"].to_numpy()}) if not etf.empty else empty
+    return {"industries": agg, "indexes": idx, "frac": frac}
+
+
+def compute_pulse(data: dict[str, pd.DataFrame], weights: dict | None = None, now: pd.Timestamp | None = None) -> dict:
     stats = symbol_stats(data, weights)
     stocks = stats[~stats.index.isin(ETF_SET)] if not stats.empty else stats
     out = {"stats": stats, "stocks": stocks, "loaded": len(data), "requested": len(all_symbols()),
            "regime": regime(data), "vol": volatility(data, stocks) if not stocks.empty else {"ok": False, "warnings": []}}
     out["groups"] = group_table(stats) if not stats.empty else pd.DataFrame()
+    now = now if now is not None else pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    ref = data.get("SPY")
+    if ref is None:
+        ref = next(iter(data.values()), None)
+    last_bar = ref.index.max() if ref is not None and len(ref) else now
+    out["volume"] = volume_breakdown(stats, session_fraction(now, last_bar))
     return out

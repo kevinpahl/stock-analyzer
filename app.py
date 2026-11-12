@@ -2,19 +2,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-try:  # optional: lets favorites survive closing the app
-    from streamlit_js_eval import streamlit_js_eval
-except Exception:
-    streamlit_js_eval = None
-
-APP_VERSION = "5.1"
+APP_VERSION = "5.2"
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -22,13 +18,14 @@ try:
     from backtest import run_backtest, split_metrics
     from charts import (equity_chart, group_bars, intraday_chart, price_chart, regime_chart,
                         trades_chart, volume_waterfall)
+    from accounts import AccountError, build_accounts
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_index, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
     st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
-             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, requirements.txt.")
+             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, requirements.txt.")
     st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
@@ -59,8 +56,6 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .gauge .dot { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%;
               background: #fff; border: 3px solid #111827; transform: translate(-50%, -50%); }
 .gauge-labels { display: flex; justify-content: space-between; font-size: .68rem; opacity: .55; }
-[data-testid="stElementContainer"]:has(iframe[title^="streamlit_js_eval"]) { position: absolute; width: 1px;
-  height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -256,6 +251,7 @@ def get_bench(ticker: str):
 st.session_state.setdefault("ticker", "AAPL")
 st.session_state.setdefault("quick", "—")
 st.session_state.setdefault("section", "Analyze")
+st.session_state.setdefault("user", None)
 
 
 def apply_quick():
@@ -288,7 +284,14 @@ def parse_symbols(text) -> list[str]:
 def save_favorites(favs: list[str]):
     favs = favs[:MAX_FAVS]
     st.session_state["favorites"] = favs
-    try:  # mirror into the URL (?fav=AAPL,NVDA) so a bookmark brings the list back
+    user = st.session_state.get("user")
+    if user:  # signed in: the account is the source of truth; keep the list out of the URL
+        try:
+            get_accounts().set_favorites(user, favs)
+        except Exception as e:
+            st.session_state["acct_msg"] = ("error", f"Couldn't save to your account: {e}")
+        return
+    try:  # not signed in: mirror into the URL (?fav=AAPL,NVDA) so a bookmark brings the list back
         if favs:
             st.query_params["fav"] = ",".join(favs)
         elif "fav" in st.query_params:
@@ -341,41 +344,128 @@ if "favorites" not in st.session_state:
         st.session_state["favorites"] = []
 
 
-FAV_STORE_KEY = "stock_analyzer_favorites_v1"
-
-
-def sync_favorites_with_browser():
-    """Keep favorites in this browser's local storage so they are still here after closing the app.
-    Needs the optional `streamlit-js-eval` package; without it favorites live only in the page address."""
-    if streamlit_js_eval is None:
-        return
-    ss = st.session_state
+# ---------- accounts (favorites follow you when you log back in) ----------
+def get_secret(name: str):
     try:
-        if not ss.get("favs_loaded"):
-            stored = streamlit_js_eval(js_expressions=f"'v1:' + (localStorage.getItem('{FAV_STORE_KEY}') || '')",
-                                       key="favs_load")
-            if not isinstance(stored, str):
-                return  # the browser hasn't answered yet; the component reruns the app when it does
-            saved = parse_symbols(stored[3:] if stored.startswith("v1:") else "")
-            ss["favs_loaded"] = True
-            merged = list(dict.fromkeys(saved + ss["favorites"]))[:MAX_FAVS]
-            if merged != ss["favorites"]:
-                save_favorites(merged)
-        payload = ",".join(ss["favorites"])
-        js = f"localStorage.setItem('{FAV_STORE_KEY}', {json.dumps(payload)}); 1"
-        key = "favs_save_" + hashlib.md5(payload.encode()).hexdigest()[:8]
-        try:
-            streamlit_js_eval(js_expressions=js, want_output=False, key=key)
-        except TypeError:
-            streamlit_js_eval(js_expressions=js, key=key)
+        v = st.secrets.get(name)
     except Exception:
-        pass  # never let storage problems break the app
+        v = None
+    return v or os.environ.get(name)
 
 
-sync_favorites_with_browser()
+@st.cache_resource(show_spinner=False)
+def get_accounts():
+    return build_accounts(get_secret("UPSTASH_REDIS_REST_URL"), get_secret("UPSTASH_REDIS_REST_TOKEN"),
+                          Path(__file__).with_name("accounts_local.json"))
+
+
+def clear_url_favorites():
+    try:
+        if "fav" in st.query_params:
+            del st.query_params["fav"]
+    except Exception:
+        pass
+
+
+def _forget_login_fields():
+    for k in ("acct_user", "acct_pw", "acct_pw2"):
+        try:
+            st.session_state.pop(k, None)
+        except Exception:
+            pass
+
+
+def do_login(username: str, password: str):
+    ss = st.session_state
+    user, saved = get_accounts().login(username, password)
+    merged = list(dict.fromkeys(saved + ss["favorites"]))[:MAX_FAVS]  # keep anything added while signed out
+    ss["user"], ss["favorites"] = user, merged
+    if merged != saved:
+        get_accounts().set_favorites(user, merged)
+    clear_url_favorites()
+    ss["acct_msg"] = ("success", f"Welcome back, {user}. {len(merged)} favorite{'s' if len(merged) != 1 else ''} loaded.")
+
+
+def do_signup(username: str, password: str):
+    ss = st.session_state
+    user, favs = get_accounts().create(username, password, ss["favorites"])
+    ss["user"], ss["favorites"] = user, favs
+    clear_url_favorites()
+    ss["acct_msg"] = ("success", f"Account created. You're signed in as {user}.")
+
+
+def do_logout():
+    ss = st.session_state
+    ss["user"], ss["favorites"] = None, []
+    clear_url_favorites()
+    ss["acct_msg"] = ("info", "You're signed out.")
+
+
+def render_account_box():
+    ss = st.session_state
+    user = ss.get("user")
+    st.markdown("### Account")
+    msg = ss.pop("acct_msg", None)
+    if msg:
+        {"success": st.success, "error": st.error, "info": st.info}[msg[0]](msg[1])
+    if user:
+        st.caption(f"Signed in as **{user}**. Your favorites are saved to your account.")
+        st.button("Log out", on_click=do_logout, key="acct_logout")
+        with st.expander("Account settings"):
+            with st.form("pw_form", clear_on_submit=True):
+                old = st.text_input("Current password", type="password")
+                new = st.text_input("New password (8+ characters)", type="password")
+                if st.form_submit_button("Change password"):
+                    try:
+                        get_accounts().change_password(user, old, new)
+                        st.success("Password changed.")
+                    except AccountError as e:
+                        st.error(str(e))
+            with st.form("del_form", clear_on_submit=True):
+                st.caption("Deleting your account permanently removes it and your saved favorites.")
+                pw = st.text_input("Password", type="password", key="del_pw")
+                sure = st.checkbox("Yes, delete my account", key="del_sure")
+                if st.form_submit_button("Delete account"):
+                    if not sure:
+                        st.error("Tick the box to confirm.")
+                    else:
+                        try:
+                            get_accounts().delete(user, pw)
+                            do_logout()
+                            ss["acct_msg"] = ("info", "Your account was deleted.")
+                            st.rerun()
+                        except AccountError as e:
+                            st.error(str(e))
+    else:
+        st.caption("Log in to keep your favorites across visits and devices.")
+        mode = segmented("Account action", ["Log in", "Create account"], "Log in", "acct_mode")
+        with st.form("acct_form"):
+            u = st.text_input("Username", key="acct_user")
+            p = st.text_input("Password", type="password", key="acct_pw")
+            p2 = st.text_input("Confirm password", type="password", key="acct_pw2") if mode == "Create account" else None
+            submitted = st.form_submit_button(mode)
+        if submitted:
+            try:
+                if mode == "Create account":
+                    if p != p2:
+                        raise AccountError("The two passwords don't match.")
+                    do_signup(u, p)
+                else:
+                    do_login(u, p)
+                _forget_login_fields()
+                st.rerun()
+            except AccountError as e:
+                st.error(str(e))
+    try:
+        if get_accounts().store.kind == "local file":
+            st.caption("⚠ Accounts are stored in a local file. On Streamlit Cloud they reset whenever the app "
+                       "restarts. Add a free Upstash database in Secrets to keep them for good (see README).")
+    except Exception:
+        pass
 
 
 with st.sidebar:
+    render_account_box()
     st.markdown("### Symbol")
     st.text_input("Ticker or index", key="ticker",
                   help="Stocks (AAPL), ETFs (SPY) or indexes (^GSPC = S&P 500, ^NDX = Nasdaq-100).")
@@ -1070,22 +1160,21 @@ def render_favorites(weights: dict):
     favs = st.session_state["favorites"]
     st.markdown("Save the symbols you follow and see them all in one live table. Add one from the sidebar while "
                 "viewing it, or type symbols below.")
-    if st.session_state.get("favs_loaded"):
-        st.caption("✓ Your favorites are saved in this browser, so they'll be here when you come back.")
-    elif streamlit_js_eval is None:
-        st.caption("Browser saving isn't set up (the `streamlit-js-eval` package is missing), so favorites are only "
-                   "kept in the page address. Bookmark the page to keep them.")
+    if st.session_state.get("user"):
+        st.caption(f"✓ Signed in as {st.session_state['user']}. Your favorites are saved to your account and will be "
+                   "here when you log back in.")
     else:
-        st.caption("Waiting for this browser's storage to respond. Until it does, favorites are only kept in the "
-                   "page address.")
+        st.caption("You're not signed in. Create an account or log in (sidebar) to keep your favorites across visits "
+                   "and devices.")
     a1, a2 = st.columns([5, 1])
     a1.text_input("Add symbols (comma-separated)", key="fav_add", placeholder="e.g. NVDA, XOM, ^GSPC")
     a2.write("")
     a2.write("")
     a2.button("Add", on_click=add_from_box, key="fav_add_btn")
-    note = ("Your favorites are saved in this page's web address (the part after ?fav=). **Bookmark the page** after "
-            "adding them and they'll be there next time, on any device. Opening the plain app link starts with an "
-            "empty list; use 'Manage / back up' below to copy or restore your list.")
+    note = ("Your favorites are saved to your account, so they're here whenever you log in."
+            if st.session_state.get("user") else
+            "Not signed in: favorites are only kept in this page's web address (the part after ?fav=). Log in from "
+            "the sidebar to keep them for good, or bookmark the page.")
     if not favs:
         st.info("No favorites yet. Add symbols above, or use ☆ Add to favorites in the sidebar.")
         st.button("Add examples (AAPL, MSFT, NVDA, SPY)", on_click=add_favorites,

@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "5.0"
+try:  # optional: lets favorites survive closing the app
+    from streamlit_js_eval import streamlit_js_eval
+except Exception:
+    streamlit_js_eval = None
+
+APP_VERSION = "5.1"
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
     from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
     from backtest import run_backtest, split_metrics
     from charts import (equity_chart, group_bars, intraday_chart, price_chart, regime_chart,
-                        trades_chart)
+                        trades_chart, volume_waterfall)
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
@@ -53,6 +59,8 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .gauge .dot { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%;
               background: #fff; border: 3px solid #111827; transform: translate(-50%, -50%); }
 .gauge-labels { display: flex; justify-content: space-between; font-size: .68rem; opacity: .55; }
+[data-testid="stElementContainer"]:has(iframe[title^="streamlit_js_eval"]) { position: absolute; width: 1px;
+  height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -331,6 +339,40 @@ if "favorites" not in st.session_state:
         st.session_state["favorites"] = parse_symbols(st.query_params.get("fav", ""))[:MAX_FAVS]
     except Exception:
         st.session_state["favorites"] = []
+
+
+FAV_STORE_KEY = "stock_analyzer_favorites_v1"
+
+
+def sync_favorites_with_browser():
+    """Keep favorites in this browser's local storage so they are still here after closing the app.
+    Needs the optional `streamlit-js-eval` package; without it favorites live only in the page address."""
+    if streamlit_js_eval is None:
+        return
+    ss = st.session_state
+    try:
+        if not ss.get("favs_loaded"):
+            stored = streamlit_js_eval(js_expressions=f"'v1:' + (localStorage.getItem('{FAV_STORE_KEY}') || '')",
+                                       key="favs_load")
+            if not isinstance(stored, str):
+                return  # the browser hasn't answered yet; the component reruns the app when it does
+            saved = parse_symbols(stored[3:] if stored.startswith("v1:") else "")
+            ss["favs_loaded"] = True
+            merged = list(dict.fromkeys(saved + ss["favorites"]))[:MAX_FAVS]
+            if merged != ss["favorites"]:
+                save_favorites(merged)
+        payload = ",".join(ss["favorites"])
+        js = f"localStorage.setItem('{FAV_STORE_KEY}', {json.dumps(payload)}); 1"
+        key = "favs_save_" + hashlib.md5(payload.encode()).hexdigest()[:8]
+        try:
+            streamlit_js_eval(js_expressions=js, want_output=False, key=key)
+        except TypeError:
+            streamlit_js_eval(js_expressions=js, key=key)
+    except Exception:
+        pass  # never let storage problems break the app
+
+
+sync_favorites_with_browser()
 
 
 with st.sidebar:
@@ -833,6 +875,40 @@ def pulse_results(wkey: tuple, selected: list, flt: dict):
                           for c in reg["components"]]),
             column_config={"Weight": st.column_config.NumberColumn(format="%.0f%%")})
 
+    # --- volume flow ---
+    st.markdown("### Where the volume is trading")
+    vb = p["volume"]
+    v1, v2 = st.columns(2)
+    with v1:
+        ctl("Measure")
+        vmeas = segmented("Measure", ["Dollars traded", "Shares traded"], "Dollars traded", "pulse_vmeasure")
+    with v2:
+        ctl("View")
+        vmode = segmented("View", ["Total today", "Change vs 20-day average"], "Total today", "pulse_vmode")
+    measure = "dollars" if vmeas.startswith("Dollars") else "shares"
+    mode = "total" if vmode.startswith("Total") else "change"
+    ind = vb["industries"]
+    ind = ind[ind["name"].isin(selected)] if not ind.empty else ind
+    w1, w2 = st.columns([3, 2])
+    with w1:
+        st.markdown("#### By business type")
+        if ind.empty:
+            st.info("Select at least one business type above.")
+        else:
+            show_chart(volume_waterfall(ind, measure, mode, vb["frac"]))
+    with w2:
+        st.markdown("#### By index (tracking ETFs)")
+        if vb["indexes"].empty:
+            st.info("Index ETF data isn't available right now.")
+        else:
+            show_chart(volume_waterfall(vb["indexes"], measure, mode, vb["frac"]))
+    pace = (f" About {vb['frac']:.0%} of a normal day's volume has traded so far, so 'change vs average' compares "
+            "today with the average pace for this time of day (an estimate)." if vb["frac"] < 1 else
+            " The market is closed, so this is the last full session.")
+    st.caption("Dollars traded = price × volume, for the stocks this page scans (not the whole market). Each stock is "
+               "counted once, in the first business type it's listed under. Index volume uses the ETFs that track "
+               "each index." + pace)
+
     # --- business types ---
     st.markdown("### Business types")
     g = p["groups"]
@@ -994,6 +1070,14 @@ def render_favorites(weights: dict):
     favs = st.session_state["favorites"]
     st.markdown("Save the symbols you follow and see them all in one live table. Add one from the sidebar while "
                 "viewing it, or type symbols below.")
+    if st.session_state.get("favs_loaded"):
+        st.caption("✓ Your favorites are saved in this browser, so they'll be here when you come back.")
+    elif streamlit_js_eval is None:
+        st.caption("Browser saving isn't set up (the `streamlit-js-eval` package is missing), so favorites are only "
+                   "kept in the page address. Bookmark the page to keep them.")
+    else:
+        st.caption("Waiting for this browser's storage to respond. Until it does, favorites are only kept in the "
+                   "page address.")
     a1, a2 = st.columns([5, 1])
     a1.text_input("Add symbols (comma-separated)", key="fav_add", placeholder="e.g. NVDA, XOM, ^GSPC")
     a2.write("")

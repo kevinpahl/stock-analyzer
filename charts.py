@@ -143,3 +143,42 @@ def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str 
         fig.add_hline(y=prev_close, line_dash="dash", line_color="rgba(128,128,128,0.6)",
                       annotation_text="Prev close", annotation_position="top left")
     return _style(fig, 300, [dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])
+
+
+def _fmt_vol(v: float, measure: str) -> str:
+    sign = "+" if v > 0 else "-" if v < 0 else ""
+    a, pre = abs(v), ("$" if measure == "dollars" else "")
+    return f"{sign}{pre}{a / 1e9:.1f}B" if a >= 1e9 else f"{sign}{pre}{a / 1e6:.0f}M"
+
+
+def volume_waterfall(df: pd.DataFrame, measure: str = "dollars", mode: str = "total", frac: float = 1.0) -> go.Figure:
+    """Waterfall of traded volume. mode='total': each step adds that group's volume today, ending in the total.
+    mode='change': starts at the 20-day average pace and each step is the group's change vs that average."""
+    col, avg = ("dollars", "avg_dollars") if measure == "dollars" else ("shares", "avg_shares")
+    d = df.fillna(0).copy()
+    if mode == "change":
+        d["delta"] = d[col] - d[avg] * frac
+        d = d.sort_values("delta", ascending=False)
+        base = float((d[avg] * frac).sum())
+        x = ["20-day average pace"] + list(d["name"]) + ["Today"]
+        y = [base] + list(d["delta"]) + [0]
+        kinds = ["absolute"] + ["relative"] * len(d) + ["total"]
+        text = [_fmt_vol(base, measure).lstrip("+")] + [_fmt_vol(v, measure) for v in d["delta"]] + \
+               [_fmt_vol(float(d[col].sum()), measure).lstrip("+")]
+        inc, dec = UP, DOWN
+    else:
+        d = d.sort_values(col, ascending=False)
+        x = list(d["name"]) + ["Total"]
+        y = list(d[col]) + [0]
+        kinds = ["relative"] * len(d) + ["total"]
+        text = [_fmt_vol(v, measure).lstrip("+") for v in d[col]] + [_fmt_vol(float(d[col].sum()), measure).lstrip("+")]
+        inc, dec = BLUE, DOWN
+    scale, unit = (1e9, "$ billions") if measure == "dollars" else (1e6, "shares, millions")
+    fig = go.Figure(go.Waterfall(
+        x=x, y=[v / scale for v in y], measure=kinds, text=text, textposition="outside",
+        connector=dict(line=dict(color=GRID)), increasing=dict(marker=dict(color=inc)),
+        decreasing=dict(marker=dict(color=dec)), totals=dict(marker=dict(color="#475569")), cliponaxis=False))
+    fig.update_xaxes(tickangle=-40)
+    fig.update_yaxes(title_text=unit)
+    fig.update_layout(showlegend=False)
+    return _style(fig, 440)

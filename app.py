@@ -4,28 +4,32 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "5.2"
+APP_VERSION = "5.3"
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
     from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
     from backtest import run_backtest, split_metrics
-    from charts import (equity_chart, group_bars, intraday_chart, price_chart, regime_chart,
-                        trades_chart, volume_waterfall)
+    from charts import (asia_lines, equity_chart, fan_chart, group_bars, intraday_chart, price_chart,
+                        regime_chart, session_timeline, trades_chart, volume_waterfall)
+    from forecast import (HORIZONS, asia_bucket, asia_composite, asia_lead_table, cone, edge_text, live_lean,
+                          model_forecast, range_for, vol_estimates, walk_forward)
+    from sessions import ASIA, US, futures_weekend, session_status, timeline_intervals
     from accounts import AccountError, build_accounts
-    from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, signal_label, symbol_stats
+    from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, session_fraction, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_index, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
     st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
-             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, requirements.txt.")
+             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, forecast.py, sessions.py, requirements.txt.")
     st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
@@ -56,6 +60,14 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .gauge .dot { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%;
               background: #fff; border: 3px solid #111827; transform: translate(-50%, -50%); }
 .gauge-labels { display: flex; justify-content: space-between; font-size: .68rem; opacity: .55; }
+.tape { overflow: hidden; white-space: nowrap; border: 1px solid rgba(128,128,128,.22); border-radius: 10px;
+        padding: 9px 0; }
+.tape-track { display: inline-block; animation: tape-scroll 60s linear infinite; }
+.tape:hover .tape-track { animation-play-state: paused; }
+.tk { margin: 0 22px; font-size: .92rem; }
+.tk .up { color: #16a34a; font-weight: 600; }
+.tk .dn { color: #dc2626; font-weight: 600; }
+@keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,7 +75,7 @@ VERDICT_COLORS = {"STRONG BUY": "#0a7d33", "BUY": "#16a34a", "HOLD": "#b8860b",
                   "SELL": "#dc2626", "STRONG SELL": "#991b1b"}
 LIVE_TTL = 20  # seconds: how long short-lived market data is reused before asking Yahoo again
 REFRESH_OPTIONS = {"Off": 0, "10 sec": 10, "30 sec": 30, "60 sec": 60}
-SECTIONS = ["Analyze", "Favorites", "Market pulse", "Backtest", "Top movers"]
+SECTIONS = ["Analyze", "Trading", "Favorites", "Market pulse", "Backtest", "Top movers"]
 
 
 # ---------- small UI helpers (written to work across Streamlit versions) ----------
@@ -235,7 +247,7 @@ def load_favorites(symbols: tuple, weights_key: tuple):
 
 def refresh_now():
     for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe,
-               load_pulse, load_favorites):
+               load_pulse, load_favorites, load_board, load_intraday_et, load_asia_hist, forecast_index):
         getattr(fn, "clear", lambda: None)()
 
 
@@ -1105,6 +1117,344 @@ def render_pulse(weights: dict):
             "the business-type lists are examples you can edit in market.py.")
 
 
+# ======================= TRADING =======================
+US_BOARD = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^NDX": "Nasdaq-100", "^DJI": "Dow", "^RUT": "Russell 2000",
+            "^VIX": "VIX"}
+FUT_BOARD = {"ES=F": "S&P 500 futures", "NQ=F": "Nasdaq-100 futures", "YM=F": "Dow futures",
+             "RTY=F": "Russell 2000 futures"}
+MACRO_BOARD = {"^TNX": "10-yr yield", "DX-Y.NYB": "US dollar index", "CL=F": "Crude oil", "GC=F": "Gold",
+               "BTC-USD": "Bitcoin"}
+TAPE_STOCKS = "AAPL MSFT NVDA AMZN GOOGL META TSLA AVGO JPM NFLX AMD V UNH XOM".split()
+ASIA_SYMS = [m["sym"] for m in ASIA]
+TAPE_LABELS = {**US_BOARD, "ES=F": "S&P fut", "NQ=F": "Nasdaq fut", "YM=F": "Dow fut", "RTY=F": "Russell fut",
+               **{m["sym"]: m["name"] for m in ASIA}}
+LEAN_COLORS = {"LEANING HIGHER": "#16a34a", "LEANING LOWER": "#dc2626", "MIXED": "#b8860b"}
+STATUS_ICON = {"Open": "🟢 Open", "Lunch break": "🟡 Lunch break", "Pre-open": "🟡 Pre-open", "Closed": "⚪ Closed"}
+
+
+def board_symbols(extra=()) -> list[str]:
+    return list(dict.fromkeys(list(US_BOARD) + list(FUT_BOARD) + list(MACRO_BOARD) + ["^VXN"] + ASIA_SYMS
+                              + TAPE_STOCKS + list(extra)))
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def load_board(extra: tuple = ()):
+    return download_history(board_symbols(extra), "5d")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_asia_hist():
+    return download_history(ASIA_SYMS, "10y")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_intraday_et(sym: str, interval: str, period: str) -> pd.DataFrame:
+    """Intraday bars shifted to US Eastern time so markets from different time zones share one clock."""
+    h = yf.Ticker(sym).history(period=period, interval=interval, auto_adjust=True)
+    if not h.empty and h.index.tz is not None:
+        h.index = h.index.tz_convert("America/New_York").tz_localize(None)
+    return h
+
+
+@st.cache_data(ttl=300, show_spinner="Training the forecast models…")
+def forecast_index(sym: str, vix_sym: str, vol_sym: str, bar_key: str):
+    daily = get_daily(sym)
+    if len(daily) < 2500:
+        return {"ok": False, "reason": "Not enough price history to train a model."}
+    now = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    partial = session_fraction(now, daily.index[-1]) < 1   # today's bar is still forming: forecast from the last full close
+    close = (daily["Close"].iloc[:-1] if partial else daily["Close"]).iloc[-5200:]
+    vdf = get_daily(vix_sym)
+    vix = vdf["Close"] if not vdf.empty else None
+    idf = get_daily(vol_sym)
+    implied = float(idf["Close"].iloc[-1]) if not idf.empty else None
+    ve = vol_estimates(close, implied)
+    last = float(close.iloc[-1])
+    out = {"ok": True, "sym": sym, "last_close": last, "last_date": close.index[-1], "partial": partial,
+           "vol": ve, "implied": implied, "history": close.iloc[-90:],
+           "cone": cone(last, ve["sigma_daily"], close.index[-1], 10), "horizons": {}}
+    for h in HORIZONS:
+        out["horizons"][h] = {"model": model_forecast(close, vix, h), "test": walk_forward(close, vix, h),
+                              "range": range_for(last, ve["sigma_daily"], h)}
+    return out
+
+
+def quote(board: dict, sym: str):
+    d = board.get(sym)
+    if d is None:
+        return None
+    c = d["Close"].dropna()
+    if len(c) < 2:
+        return None
+    last, prev = float(c.iloc[-1]), float(c.iloc[-2])
+    return {"last": last, "prev": prev, "chg": last - prev, "pct": (last / prev - 1) * 100}
+
+
+def tape_html(items: list) -> str:
+    cells = "".join(
+        f"<span class='tk'><b>{lab}</b> {last:,.2f} <span class='{'up' if pct >= 0 else 'dn'}'>"
+        f"{'▲' if pct >= 0 else '▼'} {abs(pct):.2f}%</span></span>" for lab, last, pct in items)
+    dur = max(60, len(items) * 3)
+    delay = -(time.time() % dur)   # keeps the scroll position continuous across auto-refreshes
+    return (f"<div class='tape'><div class='tape-track' style='animation-duration:{dur}s;"
+            f"animation-delay:{delay:.1f}s'>{cells}{cells}</div></div>")
+
+
+def trading_tape(favs: tuple):
+    board = load_board(favs)
+    order = (list(favs) + ["^GSPC", "^IXIC", "^DJI", "^RUT", "^VIX", "ES=F", "NQ=F"] + ASIA_SYMS + TAPE_STOCKS)
+    items = []
+    for sym in dict.fromkeys(order):
+        q = quote(board, sym)
+        if q:
+            items.append((TAPE_LABELS.get(sym, sym), q["last"], q["pct"]))
+    if not items:
+        st.info("Live prices aren't available right now.")
+        return
+    st.markdown(tape_html(items), unsafe_allow_html=True)
+    st.caption(f"Updated {now_et()} ET · your favorites come first · hover to pause. Prices come from Yahoo Finance "
+               "and can lag by up to ~15 minutes on some exchanges.")
+
+
+def metric_cards(board: dict, mapping: dict, inverse: tuple = ()):
+    cols = st.columns(len(mapping))
+    for col, (sym, label) in zip(cols, mapping.items()):
+        q = quote(board, sym)
+        if q:
+            col.metric(label, f"{q['last']:,.2f}", f"{q['pct']:+.2f}%", delta_color="inverse" if sym in inverse else "normal")
+        else:
+            col.metric(label, "n/a")
+
+
+def trading_live(wkey: tuple, favs: tuple):
+    board = load_board(favs)
+    st.markdown("#### US indexes")
+    metric_cards(board, US_BOARD, inverse=("^VIX",))
+    st.markdown("#### Futures (trade almost 24 hours)")
+    metric_cards(board, FUT_BOARD)
+    st.markdown("#### Rates, dollar, commodities, crypto")
+    metric_cards(board, MACRO_BOARD)
+
+    c1, c2 = st.columns(2)
+    for col, sym, nm in ((c1, "^GSPC", "S&P 500"), (c2, "^IXIC", "Nasdaq")):
+        with col:
+            st.markdown(f"#### {nm} today")
+            try:
+                df = load_intraday(sym, "5m", "1d", False)
+                q = quote(board, sym)
+                if len(df) >= 2:
+                    show_chart(intraday_chart(df, q["prev"] if q else None, nm))
+                else:
+                    st.info("No intraday bars yet. The market may be closed.")
+            except Exception:
+                st.info("Intraday data isn't available right now.")
+
+    st.markdown("### Most active stocks right now")
+    try:
+        s = load_pulse(wkey)["stocks"]
+    except Exception as e:
+        st.info(f"The stock scan isn't available right now ({e}).")
+        return
+    if s.empty:
+        st.info("No scan data yet.")
+        return
+    s = s.copy()
+    s["Signal"] = s["Score"].map(signal_label)
+    s["Traded today ($M)"] = s["dollar_vol"] / 1e6
+    cfg = {"Price": st.column_config.NumberColumn(format="$%.2f"),
+           "1d %": st.column_config.NumberColumn(format="%+.2f%%"),
+           "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+           "Traded today ($M)": st.column_config.NumberColumn(format="$%,.0f")}
+    cols = ["Ticker", "Price", "1d %", "Rel. volume", "Traded today ($M)", "Signal"]
+    show_df(s.sort_values("dollar_vol", ascending=False).head(15)[cols], column_config=cfg)
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("#### Biggest gainers")
+        show_df(s.sort_values("1d %", ascending=False).head(8)[cols[:4] + ["Signal"]], column_config=cfg)
+    with g2:
+        st.markdown("#### Biggest losers")
+        show_df(s.sort_values("1d %").head(8)[cols[:4] + ["Signal"]], column_config=cfg)
+    st.caption(f"Updated {now_et()} ET · from the scan of about 180 stocks on the Market pulse page.")
+
+
+def trading_asia(favs: tuple):
+    board = load_board(favs)
+    now = pd.Timestamp.now(tz="UTC")
+    rows, chgs, status = [], [], {}
+    for m in ASIA:
+        stt, detail = session_status(m, now)
+        q = quote(board, m["sym"])
+        status[m["name"]] = stt
+        if q:
+            chgs.append(q["pct"])
+        rows.append({"Market": m["name"], "Country": m["country"], "Session": STATUS_ICON[stt], "Detail": detail,
+                     "Local time": now.tz_convert(m["tz"]).strftime("%a %H:%M"),
+                     "Index": q["last"] if q else None, "Change %": q["pct"] if q else None})
+    avg = sum(chgs) / len(chgs) if len(chgs) >= 3 else None
+    if avg is not None:
+        up = sum(1 for c in chgs if c > 0)
+        tone = "higher" if avg > 0.25 else "lower" if avg < -0.25 else "mixed"
+        open_now = [n for n, s in status.items() if s == "Open"]
+        st.markdown(f"**Asia is {tone}:** average {avg:+.2f}%, with {up} of {len(chgs)} markets up. "
+                    + (f"Still open: {', '.join(open_now)}." if open_now else "All Asian markets are closed or on break."))
+    show_df(pd.DataFrame(rows), column_config={
+        "Index": st.column_config.NumberColumn(format="%,.2f"),
+        "Change %": st.column_config.NumberColumn(format="%+.2f%%")})
+
+    st.markdown("#### When each market is open (US Eastern time)")
+    now_et_ts = now.tz_convert("America/New_York").tz_localize(None)
+    colors = {m["name"]: ("#16a34a" if status[m["name"]] == "Open" else "#94a3b8") for m in ASIA}
+    colors[US["name"]] = "#2563eb"
+    iv = timeline_intervals(ASIA + [US], now)
+    if iv:
+        show_chart(session_timeline(iv, now_et_ts, colors))
+    else:
+        st.info("All of these markets are closed for the weekend.")
+    st.caption("Green bars are markets open right now; the dashed line is the current time. Based on regular "
+               "scheduled hours. Exchange holidays aren't tracked, so a market can show open on a holiday.")
+
+    st.markdown("#### Asian indexes today, % since each session's open (US Eastern clock)")
+    lines = {}
+    for m in ASIA:
+        try:
+            d = load_intraday_et(m["sym"], "5m", "1d")
+            if len(d) >= 3:
+                lines[m["name"]] = (d["Close"] / d["Open"].iloc[0] - 1) * 100
+        except Exception:
+            pass
+    if lines:
+        show_chart(asia_lines(pd.DataFrame(lines).sort_index()))
+        st.caption("Shows each market's latest session. Yahoo's intraday data for Asia can be delayed or missing "
+                   "for some indexes.")
+    else:
+        st.info("Intraday data for Asia isn't available right now. Try again in a few minutes.")
+
+    st.markdown("### Does Asia predict the US close?")
+    try:
+        comp = asia_composite(load_asia_hist())
+    except Exception:
+        comp = pd.Series(dtype=float)
+    cols = st.columns(2)
+    cur = asia_bucket(avg) if avg is not None else None
+    for col, (nm, sym) in zip(cols, (("S&P 500", "^GSPC"), ("Nasdaq", "^IXIC"))):
+        with col:
+            tab, corr = asia_lead_table(get_daily(sym)["Close"], comp) if len(comp) else (pd.DataFrame(), float("nan"))
+            if tab.empty:
+                st.info("Not enough history to compare.")
+                continue
+            tab["Today"] = tab["bucket"].map(lambda b: "◀ today" if b == cur else "")
+            show_df(tab.rename(columns={"bucket": f"When Asia was...", "sessions": "Sessions",
+                                        "us_up_pct": f"{nm} closed up %", "avg_us_move_pct": "Avg move %"}),
+                    column_config={f"{nm} closed up %": st.column_config.NumberColumn(format="%.0f%%"),
+                                   "Avg move %": st.column_config.NumberColumn(format="%+.2f%%")})
+            st.caption(f"Last 10 years: correlation between Asia's average move and the {nm}'s same-day move is "
+                       f"{corr:.2f}. Asia closes before the US opens, so this is known in advance. It's a tilt, not a guarantee.")
+
+
+def forecast_card(name: str, f: dict, lean: dict | None, lean_note: str):
+    st.markdown(f"### {name}")
+    if not f.get("ok"):
+        st.warning(f.get("reason", "The forecast isn't available right now."))
+        return
+    st.caption(f"Forecast from the last full close: {f['last_close']:,.2f} on {f['last_date']:%b %d}"
+               + (" (today's session is still in progress)" if f["partial"] else ""))
+    if lean:
+        reasons = " · ".join(f"{c['name']}: {c['detail']}" for c in lean["components"])
+        st.markdown(f"<div class='card'><div class='lbl'>Live read right now</div>"
+                    f"<div class='pill' style='background:{LEAN_COLORS[lean['label']]}'>{lean['label']}</div>"
+                    f"<div class='muted'>{reasons}</div></div>", unsafe_allow_html=True)
+    else:
+        st.info(lean_note)
+    labels = {1: "Today's close" if f["partial"] else "Next close", 5: "In 5 sessions", 21: "In 21 sessions"}
+    for col, h in zip(st.columns(3), HORIZONS):
+        hz = f["horizons"][h]
+        mf, rg = hz["model"], hz["range"]
+        col.metric(labels[h], f"{mf['p_up'] * 100:.0f}% up" if mf.get("ok") else "n/a")
+        col.caption(f"Typical move ±{rg['sigma_pct']:.1f}%. 68% range {rg['lo68']:,.0f} to {rg['hi68']:,.0f}. "
+                    f"{edge_text(hz['test'].get('edge', '')).capitalize()}.")
+    show_chart(fan_chart(f["history"], f["cone"], name))
+    with st.expander("How reliable is this? (tested on roughly the last 3 years)"):
+        rows = []
+        for h in HORIZONS:
+            t = f["horizons"][h]["test"]
+            if t.get("n"):
+                rows.append({"Horizon": labels[h], "Test days": t["n"], "Model accuracy": f"{t['accuracy']:.1%}",
+                             "Naive guess": f"{t['baseline_accuracy']:.1%}", "Probability skill": f"{t['skill']:+.1%}",
+                             "Verdict": edge_text(t["edge"]).capitalize()})
+        if rows:
+            show_df(pd.DataFrame(rows))
+        mf = f["horizons"][1]["model"]
+        if mf.get("ok") and mf.get("drivers"):
+            st.write("Biggest influences on the next-close number right now: " + "; ".join(
+                f"{d['feature']} (pushes {d['pushes']})" for d in mf["drivers"]) + ".")
+        vol = f["vol"]
+        imp_txt = "n/a" if f["implied"] is None else f"{f['implied']:.1f}"
+        st.caption("Method: a logistic regression on trend, momentum, volatility and VIX features, retrained monthly "
+                   "using only data available at the time, then scored on what happened next. 'Naive guess' always "
+                   "picks the more common outcome. Probabilities are capped at 30% to 70%. Ranges blend implied "
+                   f"volatility ({imp_txt}) with recent realized "
+                   f"volatility and assume no drift: typical daily move {vol['sigma_daily'] * 100:.2f}%.")
+
+
+def trading_forecast(favs: tuple):
+    board = load_board(favs)
+    now_u = pd.Timestamp.now(tz="UTC")
+    now_e = now_u.tz_convert("America/New_York")
+    weekend = futures_weekend(now_e)
+    chgs = [q["pct"] for q in (quote(board, m["sym"]) for m in ASIA) if q]
+    asia_avg = sum(chgs) / len(chgs) if len(chgs) >= 3 else None
+    vq = quote(board, "^VIX")
+    us_open = session_status(US, now_u)[0] == "Open"
+    specs = [("S&P 500", "^GSPC", "ES=F", "^VIX"), ("Nasdaq", "^IXIC", "NQ=F", "^VXN")]
+    results = {}
+    for name, sym, fut, vol_sym in specs:
+        try:
+            bar = get_daily(sym)
+            f = forecast_index(sym, "^VIX", vol_sym, f"{bar.index[-1]:%Y-%m-%d}") if len(bar) else {"ok": False}
+        except Exception as e:
+            f = {"ok": False, "reason": f"The forecast failed: {e}"}
+        fq, iq = quote(board, fut), quote(board, sym)
+        lean = None if weekend else live_lean(fq["pct"] if fq else None, asia_avg, vq["pct"] if vq else None,
+                                              iq["pct"] if iq and us_open else None)
+        results[name] = (f, lean)
+
+    lines = []
+    for name, (f, lean) in results.items():
+        if f.get("ok") and f["horizons"][1]["model"].get("ok"):
+            p = f["horizons"][1]["model"]["p_up"] * 100
+            lines.append(f"**{name}:** model {p:.0f}% up for the next close ("
+                         f"{edge_text(f['horizons'][1]['test'].get('edge', ''))}); live signals "
+                         f"{lean['label'].lower() if lean else 'unavailable'}.")
+    if lines:
+        st.info("  \n".join(lines))
+    note = ("Markets are closed for the weekend, so there are no live signals. They resume when futures reopen "
+            "Sunday evening (US Eastern time).") if weekend else "Live signals aren't available right now."
+    cols = st.columns(2)
+    for col, (name, (f, lean)) in zip(cols, results.items()):
+        with col:
+            forecast_card(name, f, lean, note)
+    st.warning("**Please read:** these are statistical estimates, not predictions you can rely on. Short-term market "
+               "moves are mostly unpredictable, and the tests above usually show little or no edge. Use the ranges "
+               "to understand how much a market can move, not to time trades. Not financial advice.")
+
+
+def render_trading(weights: dict):
+    favs = tuple(st.session_state.get("favorites", [])[:10])
+    wkey = tuple(sorted(weights.items()))
+    st.markdown("Near-real-time prices for stocks and the key indexes, the Asian sessions, and a forecast for the "
+                "S&P 500 and Nasdaq. Refreshes automatically (set the rate in the sidebar).")
+    refreshing(trading_tape)(favs)
+    st.write("")
+    ctl("Trading view")
+    view = segmented("Trading view", ["Live board", "Asia sessions", "Forecast"], "Live board", "trade_view")
+    if view == "Live board":
+        refreshing(trading_live)(wkey, favs)
+    elif view == "Asia sessions":
+        refreshing(trading_asia)(favs)
+    else:
+        refreshing(trading_forecast)(favs)
+
+
 # ======================= FAVORITES =======================
 FAV_REFRESH = {"Off": 0, "30 sec": 30, "1 min": 60, "5 min": 300}
 FAV_SORTS = {"Saved order": ("_pos", True), "Biggest 1D gain": ("1d %", False),
@@ -1211,6 +1561,11 @@ if section == "Analyze":
         render_analyze(ticker, weights)
     except Exception as e:
         st.error(f"Could not load data: {e}")
+elif section == "Trading":
+    try:
+        render_trading(weights)
+    except Exception as e:
+        st.error(f"Trading page error: {e}")
 elif section == "Favorites":
     try:
         render_favorites(weights)

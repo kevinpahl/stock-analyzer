@@ -182,3 +182,43 @@ def volume_waterfall(df: pd.DataFrame, measure: str = "dollars", mode: str = "to
     fig.update_yaxes(title_text=unit)
     fig.update_layout(showlegend=False)
     return _style(fig, 440)
+
+
+def session_timeline(intervals: list[dict], now, colors: dict) -> go.Figure:
+    """Gantt-style view of when each market is open, in US Eastern time, with a marker for 'now'."""
+    fig = go.Figure()
+    names = list(dict.fromkeys(i["name"] for i in intervals))
+    for it in intervals:
+        fig.add_trace(go.Bar(
+            x=[(it["end"] - it["start"]).total_seconds() * 1000], y=[it["name"]], base=[it["start"]],
+            orientation="h", marker_color=colors.get(it["name"], "#94a3b8"), showlegend=False,
+            hovertemplate=f"{it['name']}<br>{it['start']:%a %H:%M} to {it['end']:%H:%M} ET<extra></extra>"))
+    fig.add_shape(type="line", x0=now, x1=now, y0=0, y1=1, yref="paper", line=dict(color=DOWN, width=2, dash="dash"))
+    fig.update_xaxes(type="date", range=[now - pd.Timedelta(hours=10), now + pd.Timedelta(hours=14)],
+                     tickformat="%a %H:%M")
+    fig.update_yaxes(categoryorder="array", categoryarray=names[::-1])
+    fig.update_layout(barmode="overlay", hovermode="closest")
+    return _style(fig, 90 + 32 * len(names))
+
+
+def asia_lines(df: pd.DataFrame) -> go.Figure:
+    """% move since each session's open, for several indexes on one US-Eastern clock."""
+    fig = go.Figure()
+    for col in df.columns:
+        s = df[col].dropna()
+        fig.add_trace(go.Scatter(x=s.index, y=s, name=col, mode="lines", line=dict(width=1.8)))
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(128,128,128,0.6)")
+    fig.update_yaxes(ticksuffix="%")
+    return _style(fig, 360)
+
+
+def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str) -> go.Figure:
+    """Recent closes plus a widening 50% / 90% range for the coming sessions (no drift assumed)."""
+    fig = go.Figure()
+    x = list(cone_df.index)
+    for lo, hi, fill, label in (("lo90", "hi90", "rgba(37,99,235,0.10)", "90% range"),
+                                ("lo50", "hi50", "rgba(37,99,235,0.22)", "50% range")):
+        fig.add_trace(go.Scatter(x=x + x[::-1], y=list(cone_df[hi]) + list(cone_df[lo])[::-1], fill="toself",
+                                 fillcolor=fill, line=dict(width=0), hoverinfo="skip", name=label))
+    fig.add_trace(go.Scatter(x=hist.index, y=hist, name=name, line=dict(color=BLUE, width=2)))
+    return _style(fig, 340, [dict(bounds=["sat", "mon"])])

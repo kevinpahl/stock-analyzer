@@ -8,6 +8,9 @@ Sections (switch at the top of the page):
   Chart view **Live** = intraday bars (1m to 1h, 1D to 1M, optional extended hours);
   **History** = daily / weekly / monthly / quarterly bars over any range or custom dates.
   Works for stocks, ETFs and indexes (e.g. ^GSPC). 9/20/50/200-day moving averages, Bollinger, volume, RSI, MACD.
+- **Trading**: scrolling live ticker tape (your favorites first), US index / futures / rates / commodities boards,
+  intraday S&P and Nasdaq charts, most-active stocks, the Asian sessions (open/closed status, live moves, how Asia has
+  historically led the US close), and a tested statistical forecast for the S&P 500 and Nasdaq with live signals.
 - **Favorites**: save symbols (sidebar ☆ button, or type them) and watch them in one live table. Create an account
   (sidebar) and your favorites are saved to it and come back when you log in.
 - **Market pulse**: scans ~200 stocks and ETFs, rates the market bullish/bearish (with trend over time), warns on
@@ -15,7 +18,7 @@ Sections (switch at the top of the page):
 - **Backtest**: replays the technical score on past data vs buy & hold (custom test period, costs, in/out-of-sample).
 - **Top movers**: scans gainers/losers/most-active (or your own list), ranks movers by score; optional auto-refresh.
 
-Files: app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, requirements.txt,
+Files: app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, forecast.py, sessions.py, requirements.txt,
 .streamlit/config.toml (optional theme).
 
 ## Accounts setup (so favorites survive restarts)

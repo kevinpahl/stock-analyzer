@@ -148,8 +148,9 @@ def range_for(last: float, sigma_d: float, h: int) -> dict:
             "lo90": last * np.exp(-Z90 * s), "hi90": last * np.exp(Z90 * s)}
 
 
-def cone(last: float, sigma_d: float, anchor: pd.Timestamp, days: int = 10) -> pd.DataFrame:
-    dates = [anchor] + list(pd.bdate_range(anchor + pd.Timedelta(days=1), periods=days))
+def cone(last: float, sigma_d: float, anchor: pd.Timestamp, days: int = 10, calendar_days: bool = False) -> pd.DataFrame:
+    nxt = anchor + pd.Timedelta(days=1)
+    dates = [anchor] + list(pd.date_range(nxt, periods=days) if calendar_days else pd.bdate_range(nxt, periods=days))
     rows = []
     for d in range(days + 1):
         s = sigma_d * np.sqrt(d)

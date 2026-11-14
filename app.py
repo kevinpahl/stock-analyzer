@@ -11,7 +11,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "5.3"
+APP_VERSION = "6.0"
+# Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
+EXPECTED_SIZES = {"analyzer.py": 12079, "backtest.py": 5320, "charts.py": 12763, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 8926, "forecast.py": 10830, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -23,13 +25,31 @@ try:
                           model_forecast, range_for, vol_estimates, walk_forward)
     from sessions import ASIA, US, futures_weekend, session_status, timeline_intervals
     from accounts import AccountError, build_accounts
+    from crypto import (CATEGORIES, CATEGORY_OF, COINS, CRYPTO_REGIME_WEIGHTS, NAME_OF, TOP_COINS, compute_crypto_pulse,
+                        crypto_symbols)
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, session_fraction, signal_label, symbol_stats
     from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
-    from utils import (ETF_FOR, INDEX_NAMES, INTERVALS, INTRADAY, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
-                       is_index, live_params, preset_start, resample_ohlcv, strip_tz)
+    from utils import (BAR_LABELS, LIVE_RANGES, ETF_FOR, INDEX_NAMES, INTERVALS, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
+                       is_crypto, is_index, live_days, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
-    st.error(f"A file is missing or out of date: {e}. Upload ALL of these together (same folder / same repo level): "
-             "app.py, analyzer.py, backtest.py, screener.py, charts.py, utils.py, market.py, accounts.py, forecast.py, sessions.py, requirements.txt.")
+    here = Path(__file__).parent
+    found = {p.name: p.stat().st_size for p in here.glob("*.py")}
+    rows = []
+    for fname, size in EXPECTED_SIZES.items():
+        got = found.get(fname)
+        rows.append({"File": fname, "Found on the server": "not found" if got is None else f"{got:,} bytes",
+                     "This version expects": f"{size:,} bytes",
+                     "Status": "✗ missing" if got is None else "✓ matches" if got == size else "✗ different (old version?)"})
+    copies = sorted(n for n in found if n not in EXPECTED_SIZES and n != "app.py" and ("(" in n or " " in n))
+    st.error(f"**The app can't start: some files are missing or out of date.**\n\nTechnical detail: `{e}`")
+    st.dataframe(pd.DataFrame(rows), hide_index=True)
+    if copies:
+        st.warning("These look like duplicate downloads and are NOT used by the app: "
+                   + ", ".join(f"`{c}`" for c in copies) + ". Delete them from your repo, then upload the file with "
+                   "its exact original name (for example `charts.py`, not `charts (1).py`).")
+    st.info("**How to fix:** in your GitHub repo, upload the files marked ✗ with exactly the names above, at the top "
+            "level (not inside a folder), commit, then reboot the app. A tiny size difference can be harmless, but a "
+            "big one means an old copy is still there. Also upload `requirements.txt`.")
     st.stop()
 
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
@@ -68,6 +88,31 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .tk .up { color: #16a34a; font-weight: 600; }
 .tk .dn { color: #dc2626; font-weight: 600; }
 @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* ---- tablets and small screens ---- */
+@media (max-width: 1100px) {
+  .block-container { padding: 1.2rem 1rem 3rem; }
+  [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: .75rem !important; }
+  [data-testid="stColumn"], [data-testid="column"] { flex: 1 1 320px !important; min-width: min(320px, 100%) !important; }
+  [data-testid="stColumn"]:has([data-testid="stMetric"]), [data-testid="column"]:has([data-testid="stMetric"]) {
+    flex: 1 1 150px !important; min-width: 150px !important; }
+}
+@media (max-width: 640px) {
+  h1 { font-size: 1.6rem !important; }
+  .sym-title .name { font-size: 1.35rem; }
+  [data-testid="stColumn"], [data-testid="column"] { flex: 1 1 100% !important; min-width: 100% !important; }
+  [data-testid="stColumn"]:has([data-testid="stMetric"]), [data-testid="column"]:has([data-testid="stMetric"]) {
+    flex: 1 1 calc(50% - .75rem) !important; min-width: calc(50% - .75rem) !important; }
+  [data-testid="stMetricValue"] { font-size: 1.2rem; }
+  [data-testid="stMetric"] { padding: 10px 12px; }
+  .tk { margin: 0 14px; font-size: .85rem; }
+}
+@media (pointer: coarse) {  /* touch screens: bigger tap targets */
+  .stButton > button, [data-testid="stFormSubmitButton"] > button { min-height: 2.75rem; }
+  [data-baseweb="select"] > div { min-height: 2.75rem; }
+  [data-baseweb="tab"] { min-height: 2.75rem; }
+  [data-testid="stSegmentedControl"] button { min-height: 2.5rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,7 +120,7 @@ VERDICT_COLORS = {"STRONG BUY": "#0a7d33", "BUY": "#16a34a", "HOLD": "#b8860b",
                   "SELL": "#dc2626", "STRONG SELL": "#991b1b"}
 LIVE_TTL = 20  # seconds: how long short-lived market data is reused before asking Yahoo again
 REFRESH_OPTIONS = {"Off": 0, "10 sec": 10, "30 sec": 30, "60 sec": 60}
-SECTIONS = ["Analyze", "Trading", "Favorites", "Market pulse", "Backtest", "Top movers"]
+SECTIONS = ["Analyze", "Trading", "Crypto", "Favorites", "Market pulse", "Backtest", "Top movers"]
 
 
 # ---------- small UI helpers (written to work across Streamlit versions) ----------
@@ -87,10 +132,18 @@ def show_df(df: pd.DataFrame, **kw):
 
 
 def show_chart(fig):
+    kw = {}
+    if st.session_state.get("compact"):  # shorter charts; one-finger swipes scroll the page instead of panning the chart
+        try:
+            fig.update_layout(height=max(240, int((fig.layout.height or 400) * 0.72)), dragmode=False,
+                              margin=dict(l=4, r=4, t=26, b=4))
+        except Exception:
+            pass
+        kw["config"] = {"displayModeBar": False}
     try:
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, width="stretch", **kw)
     except Exception:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, **kw)
 
 
 def segmented(label: str, options: list[str], default: str, key: str) -> str:
@@ -99,6 +152,11 @@ def segmented(label: str, options: list[str], default: str, key: str) -> str:
         return fn(label, options, default=default, key=key, label_visibility="collapsed") or default
     return st.radio(label, options, index=options.index(default), key=key, horizontal=True,
                     label_visibility="collapsed")
+
+
+def fmt_price(x: float) -> str:
+    """Two decimals for prices of $1 or more, four for sub-dollar coins."""
+    return f"{x:,.2f}" if abs(x) >= 1 else f"{x:.4f}"
 
 
 def ctl(text: str):
@@ -157,7 +215,12 @@ def get_daily(sym: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=LIVE_TTL, show_spinner=False)
 def load_intraday(sym: str, interval: str, period: str, prepost: bool) -> pd.DataFrame:
-    h = yf.Ticker(sym).history(period=period, interval=interval, prepost=prepost, auto_adjust=True)
+    t = yf.Ticker(sym)
+    if period.endswith("d") and period not in ("1d", "5d"):   # e.g. "60d": Yahoo wants a start date for these
+        h = t.history(start=pd.Timestamp.now() - pd.Timedelta(days=int(period[:-1]) - 1), interval=interval,
+                      prepost=prepost, auto_adjust=True)
+    else:
+        h = t.history(period=period, interval=interval, prepost=prepost, auto_adjust=True)
     return strip_tz(h) if not h.empty else h
 
 
@@ -247,7 +310,8 @@ def load_favorites(symbols: tuple, weights_key: tuple):
 
 def refresh_now():
     for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe,
-               load_pulse, load_favorites, load_board, load_intraday_et, load_asia_hist, forecast_index):
+               load_pulse, load_favorites, load_board, load_intraday_et, load_asia_hist, forecast_index,
+               load_crypto_board, load_crypto_pulse, forecast_coin):
         getattr(fn, "clear", lambda: None)()
 
 
@@ -476,11 +540,33 @@ def render_account_box():
         pass
 
 
-with st.sidebar:
-    render_account_box()
-    st.markdown("### Symbol")
+def default_compact() -> bool:
+    """Phones and Android tablets say so in their User-Agent (iPads pretend to be Macs, so use the toggle there)."""
+    try:
+        ua = (st.context.headers.get("User-Agent") or "").lower()
+    except Exception:
+        return False
+    return any(k in ua for k in ("iphone", "android", "mobile", "ipad", "tablet"))
+
+
+st.session_state.setdefault("compact", default_compact())
+COMPACT = bool(st.session_state["compact"])
+
+if COMPACT:  # the "Compact" toggle: stack everything for tablets and phones
+    st.markdown("""<style>
+.block-container { padding: .8rem .6rem 3rem !important; }
+[data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: .6rem !important; }
+[data-testid="stColumn"], [data-testid="column"] { flex: 1 1 100% !important; min-width: 100% !important; }
+[data-testid="stColumn"]:has([data-testid="stMetric"]), [data-testid="column"]:has([data-testid="stMetric"]) {
+  flex: 1 1 calc(50% - .6rem) !important; min-width: calc(50% - .6rem) !important; }
+h1 { font-size: 1.5rem !important; } h3 { font-size: 1.15rem !important; }
+</style>""", unsafe_allow_html=True)
+
+
+def symbol_controls():
+    """Symbol box, favorite star, quick picks and favorites menu (sidebar, or on the page in compact mode)."""
     st.text_input("Ticker or index", key="ticker",
-                  help="Stocks (AAPL), ETFs (SPY) or indexes (^GSPC = S&P 500, ^NDX = Nasdaq-100).")
+                  help="Stocks (AAPL), ETFs (SPY), indexes (^GSPC = S&P 500, ^NDX = Nasdaq-100) or coins (BTC-USD).")
     cur = st.session_state["ticker"].upper().strip()
     is_fav = cur in st.session_state["favorites"]
     st.button("★ Remove from favorites" if is_fav else "☆ Add to favorites", on_click=toggle_current_favorite,
@@ -488,7 +574,13 @@ with st.sidebar:
     st.selectbox("Quick picks", list(QUICK_PICKS), key="quick", on_change=apply_quick)
     if st.session_state["favorites"]:
         st.selectbox("★ Favorites", ["—"] + st.session_state["favorites"], key="fav_menu", on_change=open_favorite)
-    ticker = cur
+
+
+with st.sidebar:
+    render_account_box()
+    if not COMPACT:
+        st.markdown("### Symbol")
+        symbol_controls()
     st.markdown("### Live data")
     refresh_label = st.selectbox("Auto-refresh", list(REFRESH_OPTIONS), index=2, key="refresh")
     st.button("Refresh now", on_click=refresh_now, key="refresh_now")
@@ -499,6 +591,7 @@ with st.sidebar:
                f"to ~15 min). Educational only, not financial advice. · App v{APP_VERSION}")
 
 REFRESH_SECS = REFRESH_OPTIONS.get(refresh_label, 0)
+ticker = st.session_state["ticker"].upper().strip()
 
 
 def refreshing(fn, every: int | None = None):
@@ -538,6 +631,12 @@ refreshing(market_snapshot)()
 st.write("")
 ctl("Section")
 section = segmented("Section", SECTIONS, "Analyze", "section")
+tg1, tg2 = st.columns([3, 5])
+tg1.toggle("Compact layout (tablet / phone)", key="compact",
+           help="Stacks columns, shortens charts and moves the symbol box onto the page. Turned on automatically on most phones and tablets.")
+if COMPACT:
+    with st.expander("Symbol, favorites and quick picks", expanded=False):
+        symbol_controls()
 st.write("")
 
 
@@ -558,14 +657,17 @@ def live_kpis(ticker: str, weights: dict):
     hi = q.get("high") or float(daily["High"].iloc[-1])
     lo = q.get("low") or float(daily["Low"].iloc[-1])
     pre = "" if idx else "$"
+    crypto = is_crypto(ticker)
     age = q.get("age_min")
-    live = age is not None and age < 20
+    live = crypto or (age is not None and age < 20)
     status = ("<span style='color:#16a34a'>● LIVE</span>" if live
               else "<span style='opacity:.75'>● Market closed</span>")
+    if crypto:
+        status += "<span class='muted'> · trades 24/7</span>"
 
     k1, k2, k3, k4 = st.columns([1.2, 1, 1.2, 1.5])
-    k1.metric("Last price", f"{pre}{price:,.2f}", f"{price - prev:+,.2f} ({price / prev - 1:+.2%})")
-    k2.metric("Day range", f"{lo:,.2f} – {hi:,.2f}")
+    k1.metric("Last price", f"{pre}{fmt_price(price)}", f"{price - prev:+,.2f} ({price / prev - 1:+.2%})")
+    k2.metric("Day range", f"{fmt_price(lo)} – {fmt_price(hi)}")
     k3.markdown(f"<div class='card'><div class='lbl'>Market</div><div class='big'>{status}</div>"
                 f"<div class='muted'>Updated {now_et()} ET</div></div>", unsafe_allow_html=True)
     k4.markdown(signal_card(res), unsafe_allow_html=True)
@@ -598,11 +700,18 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
         st.info("No intraday bars available yet (the market may be closed, or this symbol has no intraday data).")
         return
     cdf = add_indicators(df)
+    crypto = is_crypto(ticker)
     us = not ("." in ticker or ticker.endswith(("-USD", "=X", "=F")))
-    show_chart(price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, eff,
-                           intraday=True, us_hours=us, prepost=prepost))
-    st.caption(f"{len(cdf)} {eff} bars · last bar {cdf.index[-1]:%b %d, %H:%M} (exchange time). "
-               "Moving averages are measured in bars. " + note)
+    daily_bars = eff == "1d"
+    if daily_bars:   # one bar per day: hide weekends for stocks, nothing for 24/7 coins
+        fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, "Daily",
+                          trades_24_7=crypto)
+    else:
+        fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, eff,
+                          intraday=True, us_hours=us, prepost=prepost, trades_24_7=crypto)
+    show_chart(fig)
+    last_bar = f"{cdf.index[-1]:%b %d}" if daily_bars else f"{cdf.index[-1]:%b %d, %H:%M} (exchange time)"
+    st.caption(f"{len(cdf)} {eff} bars · last bar {last_bar}. Moving averages are measured in bars. " + note)
 
 
 def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: str, interval: str,
@@ -660,17 +769,17 @@ def render_analyze(ticker: str, weights: dict):
     st.write("")
 
     # --- chart controls: Live (intraday, auto-refreshing) or History (day / week / month ...) ---
-    c0, c1, c2, c3 = st.columns([2, 4, 4, 2])
+    c0, c1, c2, c3 = st.columns([2, 4, 5, 2])
     with c0:
         ctl("View")
         view = segmented("View", ["Live", "History"], "Live", "view")
     if view == "Live":
         with c1:
             ctl("Range")
-            lrng = segmented("Range", ["1D", "5D", "1M"], "1D", "live_rng")
+            lrng = segmented("Range", list(LIVE_RANGES), "1D", "live_rng")
         with c2:
             ctl("Bar size")
-            lint = segmented("Bar size", INTRADAY, "5m", "live_int")
+            lint = BAR_LABELS.get(segmented("Bar size", list(BAR_LABELS), "5 min", "live_bar"), "5m")
     else:
         with c1:
             ctl("Date range")
@@ -688,7 +797,8 @@ def render_analyze(ticker: str, weights: dict):
     has_vol = float(daily["Volume"].iloc[-60:].sum()) > 0
     panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"] if has_vol else ["RSI", "MACD"],
                             default=["Volume", "RSI"] if has_vol else ["RSI"], key=f"panels_{has_vol}")
-    prepost = o3.checkbox("Extended hours", value=False, key="ext") if view == "Live" else False
+    prepost = (o3.checkbox("Extended hours", value=False, key="ext")
+               if view == "Live" and not is_crypto(ticker) else False)
 
     if view == "Live":
         refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels)
@@ -1351,13 +1461,16 @@ def trading_asia(favs: tuple):
                        f"{corr:.2f}. Asia closes before the US opens, so this is known in advance. It's a tilt, not a guarantee.")
 
 
-def forecast_card(name: str, f: dict, lean: dict | None, lean_note: str):
+def forecast_card(name: str, f: dict, lean: dict | None, lean_note: str, crypto: bool = False):
     st.markdown(f"### {name}")
     if not f.get("ok"):
         st.warning(f.get("reason", "The forecast isn't available right now."))
         return
-    st.caption(f"Forecast from the last full close: {f['last_close']:,.2f} on {f['last_date']:%b %d}"
-               + (" (today's session is still in progress)" if f["partial"] else ""))
+    unit = "day" if crypto else "session"
+    st.caption(f"Forecast from the last full {'daily close (00:00 UTC)' if crypto else 'close'}: "
+               f"{fmt_price(f['last_close'])} on {f['last_date']:%b %d}"
+               + (" (today's candle is still forming)" if f["partial"] and crypto
+                  else " (today's session is still in progress)" if f["partial"] else ""))
     if lean:
         reasons = " · ".join(f"{c['name']}: {c['detail']}" for c in lean["components"])
         st.markdown(f"<div class='card'><div class='lbl'>Live read right now</div>"
@@ -1365,14 +1478,16 @@ def forecast_card(name: str, f: dict, lean: dict | None, lean_note: str):
                     f"<div class='muted'>{reasons}</div></div>", unsafe_allow_html=True)
     else:
         st.info(lean_note)
-    labels = {1: "Today's close" if f["partial"] else "Next close", 5: "In 5 sessions", 21: "In 21 sessions"}
+    labels = {1: "Today's close" if f["partial"] else "Next close", 5: f"In 5 {unit}s", 21: f"In 21 {unit}s"}
+    if crypto:
+        labels[1] = "Today's close (00:00 UTC)" if f["partial"] else "Next daily close"
     for col, h in zip(st.columns(3), HORIZONS):
         hz = f["horizons"][h]
         mf, rg = hz["model"], hz["range"]
         col.metric(labels[h], f"{mf['p_up'] * 100:.0f}% up" if mf.get("ok") else "n/a")
-        col.caption(f"Typical move ±{rg['sigma_pct']:.1f}%. 68% range {rg['lo68']:,.0f} to {rg['hi68']:,.0f}. "
+        col.caption(f"Typical move ±{rg['sigma_pct']:.1f}%. 68% range {fmt_price(rg['lo68']) if crypto else format(rg['lo68'], ',.0f')} to {fmt_price(rg['hi68']) if crypto else format(rg['hi68'], ',.0f')}. "
                     f"{edge_text(hz['test'].get('edge', '')).capitalize()}.")
-    show_chart(fan_chart(f["history"], f["cone"], name))
+    show_chart(fan_chart(f["history"], f["cone"], name, weekend_gaps=not crypto))
     with st.expander("How reliable is this? (tested on roughly the last 3 years)"):
         rows = []
         for h in HORIZONS:
@@ -1389,11 +1504,12 @@ def forecast_card(name: str, f: dict, lean: dict | None, lean_note: str):
                 f"{d['feature']} (pushes {d['pushes']})" for d in mf["drivers"]) + ".")
         vol = f["vol"]
         imp_txt = "n/a" if f["implied"] is None else f"{f['implied']:.1f}"
+        vol_txt = ("Ranges use recent realized volatility only (coins have no implied-volatility index) "
+                   if crypto else f"Ranges blend implied volatility ({imp_txt}) with recent realized volatility ")
         st.caption("Method: a logistic regression on trend, momentum, volatility and VIX features, retrained monthly "
                    "using only data available at the time, then scored on what happened next. 'Naive guess' always "
-                   "picks the more common outcome. Probabilities are capped at 30% to 70%. Ranges blend implied "
-                   f"volatility ({imp_txt}) with recent realized "
-                   f"volatility and assume no drift: typical daily move {vol['sigma_daily'] * 100:.2f}%.")
+                   "picks the more common outcome. Probabilities are capped at 30% to 70%. " + vol_txt +
+                   f"and assume no drift: typical daily move {vol['sigma_daily'] * 100:.2f}%.")
 
 
 def trading_forecast(favs: tuple):
@@ -1453,6 +1569,378 @@ def render_trading(weights: dict):
         refreshing(trading_asia)(favs)
     else:
         refreshing(trading_forecast)(favs)
+
+
+# ======================= CRYPTO =======================
+COIN_OPTIONS = {f"{name} ({sym.replace('-USD', '')})": sym for sym, (name, _) in COINS.items()}
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def load_crypto_board(extra: tuple = ()):
+    return download_history(list(dict.fromkeys(crypto_symbols() + list(extra))), "5d")
+
+
+@st.cache_data(ttl=60, show_spinner="Scanning the crypto market (the first scan can take up to a minute)…")
+def load_crypto_pulse(weights_key: tuple):
+    return compute_crypto_pulse(download_history(crypto_symbols(), "2y"), dict(weights_key))
+
+
+@st.cache_data(ttl=300, show_spinner="Training the forecast models…")
+def forecast_coin(sym: str, bar_key: str):
+    daily = get_daily(sym)
+    if len(daily) < 1800:
+        return {"ok": False, "reason": "Not enough price history to train a model."}
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    partial = daily.index[-1].normalize() == now.normalize()   # today's UTC bar is still forming
+    close = (daily["Close"].iloc[:-1] if partial else daily["Close"]).iloc[-5200:]
+    ve = vol_estimates(close, None)                            # no implied volatility index for coins
+    last = float(close.iloc[-1])
+    out = {"ok": True, "sym": sym, "last_close": last, "last_date": close.index[-1], "partial": partial,
+           "vol": ve, "implied": None, "history": close.iloc[-90:],
+           "cone": cone(last, ve["sigma_daily"], close.index[-1], 10, calendar_days=True), "horizons": {}}
+    for h in HORIZONS:
+        out["horizons"][h] = {"model": model_forecast(close, None, h), "test": walk_forward(close, None, h),
+                              "range": range_for(last, ve["sigma_daily"], h)}
+    return out
+
+
+def toggle_favorite_symbol(sym: str):
+    if sym in st.session_state["favorites"]:
+        remove_favorite(sym)
+    else:
+        add_favorites([sym])
+
+
+def open_coin(sym: str):
+    ss = st.session_state
+    ss["section"], ss["crypto_view"] = "Crypto", "Analyze a coin"
+    label = next((lab for lab, s in COIN_OPTIONS.items() if s == sym), None)
+    if label:
+        ss["crypto_coin_pick"], ss["crypto_coin_custom"] = label, ""
+    else:
+        ss["crypto_coin_custom"] = sym
+
+
+def crypto_tape(favs: tuple):
+    board = load_crypto_board(favs)
+    items = []
+    for sym in dict.fromkeys(list(favs) + crypto_symbols()):
+        q = quote(board, sym)
+        if q:
+            items.append((sym.replace("-USD", ""), q["last"], q["pct"]))
+    if not items:
+        st.info("Live crypto prices aren't available right now.")
+        return
+    st.markdown(tape_html(items), unsafe_allow_html=True)
+    st.caption(f"Updated {now_et()} ET · your favorite coins come first · hover to pause. Prices are in US dollars; the "
+               "change is since 00:00 UTC (Yahoo's daily bars). Crypto trades around the clock.")
+
+
+def coin_tables(s: pd.DataFrame):
+    s = s.copy()
+    s["Coin"] = s["Ticker"].map(lambda t: NAME_OF.get(t, t))
+    s["Signal"] = s["Score"].map(signal_label)
+    s["Traded today ($M)"] = s["dollar_vol"] / 1e6
+    cfg = {"Price": st.column_config.NumberColumn(format="$%.6g"),
+           "1d %": st.column_config.NumberColumn(format="%+.2f%%"),
+           "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+           "Traded today ($M)": st.column_config.NumberColumn(format="$%,.0f")}
+    cols = ["Coin", "Price", "1d %", "Rel. volume", "Traded today ($M)", "Signal"]
+    return s, cols, cfg
+
+
+def crypto_live(wkey: tuple, favs: tuple):
+    board = load_crypto_board(favs)
+    st.markdown("#### Major coins")
+    metric_cards(board, {s: NAME_OF[s] for s in TOP_COINS})
+    c1, c2 = st.columns(2)
+    for col, sym, nm in ((c1, "BTC-USD", "Bitcoin"), (c2, "ETH-USD", "Ethereum")):
+        with col:
+            st.markdown(f"#### {nm}, last 24 hours")
+            try:
+                df = load_intraday(sym, "5m", "1d", False)
+                q = quote(board, sym)
+                if len(df) >= 2:
+                    show_chart(intraday_chart(df, q["prev"] if q else None, nm, breaks="none"))
+                else:
+                    st.info("No intraday bars available right now.")
+            except Exception:
+                st.info("Intraday data isn't available right now.")
+    st.markdown("### Most active coins right now")
+    try:
+        coins = load_crypto_pulse(wkey)["coins"]
+    except Exception as e:
+        st.info(f"The crypto scan isn't available right now ({e}).")
+        return
+    if coins.empty:
+        st.info("No scan data yet.")
+        return
+    s, cols, cfg = coin_tables(coins)
+    active = s.sort_values("dollar_vol", ascending=False)
+    st.session_state["crypto_tickers"] = list(active["Ticker"])
+    show_df(active.head(12)[cols], column_config=cfg)
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("#### Biggest gainers today")
+        show_df(s.sort_values("1d %", ascending=False).head(8)[cols], column_config=cfg)
+    with g2:
+        st.markdown("#### Biggest losers today")
+        show_df(s.sort_values("1d %").head(8)[cols], column_config=cfg)
+    st.caption(f"Updated {now_et()} ET · volume is as Yahoo reports it, in US dollars, for the UTC day so far.")
+
+
+def render_crypto_analyze(weights: dict):
+    c1, c2 = st.columns([3, 2])
+    pick = c1.selectbox("Coin", list(COIN_OPTIONS), key="crypto_coin_pick")
+    custom = c2.text_input("Or type another coin (for example ETH or ETH-USD)", key="crypto_coin_custom").strip().upper()
+    sym = COIN_OPTIONS[pick]
+    if custom:
+        sym = custom if custom.endswith("-USD") else custom + "-USD"
+    st.button("★ Remove from favorites" if sym in st.session_state["favorites"] else "☆ Add to favorites",
+              on_click=toggle_favorite_symbol, args=(sym,), key="crypto_fav")
+    render_analyze(sym, weights)
+
+
+def crypto_pulse_results(wkey: tuple, selected: list, flt: dict):
+    try:
+        p = load_crypto_pulse(wkey)
+    except Exception as e:
+        st.error(f"The crypto scan failed: {e}")
+        return
+    reg, vol, coins = p["regime"], p["vol"], p["coins"]
+    if not reg.get("ok") or coins.empty:
+        st.error("Not enough crypto data came back from Yahoo to rate the market right now. "
+                 "Try 'Refresh now' in the sidebar in a minute.")
+        return
+    nan = float("nan")
+    arrow = {"Improving": "▲", "Deteriorating": "▼", "Stable": "►"}.get(reg["direction"], "")
+    delta_txt = "" if reg["delta"] != reg["delta"] else f" ({reg['delta']:+.1f} vs a week ago)"
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        f"<div class='card'><div class='lbl'>Crypto market rating</div>"
+        f"<div class='pill' style='background:{REGIME_COLORS[reg['label']]}'>{reg['label']}</div>"
+        f"<div class='gauge'><div class='dot' style='left:{reg['pct']}%'></div></div>"
+        f"<div class='gauge-labels'><span>Bearish</span><span>Neutral</span><span>Bullish</span></div>"
+        f"<div class='muted' style='margin-top:6px'>{reg['pct']}/100 · {arrow} {reg['direction']}{delta_txt}</div></div>",
+        unsafe_allow_html=True)
+    if vol.get("ok"):
+        c2.markdown(
+            f"<div class='card'><div class='lbl'>Volatility</div>"
+            f"<div class='pill' style='background:{VOL_COLORS[vol['level']]}'>{vol['level']}</div>"
+            f"<div class='muted'>Bitcoin 30-day volatility {vol['realized']:.0f}% a year<br>"
+            f"Bitcoin today {vol['btc_today']:+.1f}% (UTC day)</div></div>", unsafe_allow_html=True)
+    b = reg["breadth"]
+    highs, lows = int(coins["new_high"].sum()), int(coins["new_low"].sum())
+    c3.markdown(
+        f"<div class='card'><div class='lbl'>Breadth</div>"
+        f"<div class='big'>{b.get('p50', nan):.0f}% above 50-day</div>"
+        f"<div class='muted'>{b.get('p200', nan):.0f}% above 200-day · {b.get('padv', nan):.0f}% up today<br>"
+        f"{highs} new 20-day highs · {lows} new lows</div></div>", unsafe_allow_html=True)
+
+    if vol.get("ok"):
+        msg = "\n".join(f"- {w}" for w in vol["warnings"])
+        if vol["idx"] >= 3:
+            st.error(f"**Crypto volatility is {vol['level']}.** Expect very large and fast price swings.\n{msg}")
+        elif vol["idx"] == 2 or vol["warnings"]:
+            st.warning(f"**Crypto volatility is {vol['level']}.**\n{msg}")
+        else:
+            st.success("**Crypto volatility is calm for crypto.** No warnings right now.")
+
+    a, bcol = st.columns(2)
+    with a:
+        st.markdown("#### Crypto market rating, last 4 months")
+        show_chart(regime_chart(reg["history"]))
+    with bcol:
+        st.markdown("#### Bitcoin, last 24 hours")
+        try:
+            idf = load_intraday("BTC-USD", "5m", "1d", False)
+            if len(idf) >= 2:
+                show_chart(intraday_chart(idf, load_quote("BTC-USD").get("prev"), "Bitcoin", breaks="none"))
+            else:
+                st.info("No intraday bars available right now.")
+        except Exception:
+            st.info("Intraday data isn't available right now.")
+
+    st.markdown("#### What's driving the rating")
+    total_w = sum(CRYPTO_REGIME_WEIGHTS.values())
+
+    def reading(c):
+        if not c["available"]:
+            return "n/a"
+        return "Bullish" if c["score"] > 0.5 else "Bearish" if c["score"] < -0.5 else "Neutral"
+
+    show_df(pd.DataFrame([{"Factor": c["Factor"], "Reading": reading(c), "Score (-2 to +2)": c["score"],
+                           "Weight": c["weight"] / total_w * 100, "Detail": c["reason"]} for c in reg["components"]]),
+            column_config={"Weight": st.column_config.NumberColumn(format="%.0f%%")})
+
+    st.markdown("### Where the volume is trading")
+    vb = p["volume"]
+    ctl("View")
+    vmode = segmented("View", ["Total today", "Change vs 20-day average"], "Total today", "crypto_vmode")
+    mode = "total" if vmode.startswith("Total") else "change"
+    ind = vb["industries"]
+    ind = ind[ind["name"].isin(selected)] if not ind.empty else ind
+    w1, w2 = st.columns([3, 2])
+    with w1:
+        st.markdown("#### By category")
+        if ind.empty:
+            st.info("Select at least one category above.")
+        else:
+            show_chart(volume_waterfall(ind, "dollars", mode, vb["frac"]))
+    with w2:
+        st.markdown("#### By coin")
+        if vb["indexes"].empty:
+            st.info("No coin data right now.")
+        else:
+            show_chart(volume_waterfall(vb["indexes"], "dollars", mode, vb["frac"]))
+    st.caption(f"Dollars traded in the UTC day so far, as Yahoo reports them (crypto has no open or close). About "
+               f"{vb['frac']:.0%} of the day has passed, so 'change vs average' compares with the average pace for this "
+               "time of day. Each coin is counted once, in its category. Coverage is the coins this page tracks.")
+
+    st.markdown("### Categories")
+    g = p["groups"]
+    g = g[g["Business type"].isin(selected)] if not g.empty else g
+    if g.empty:
+        st.info("Select at least one category above.")
+    else:
+        ctl("Heat map timeframe")
+        tf = segmented("Heat map timeframe", ["1D", "5D", "1M", "3M"], "1D", "crypto_tf")
+        show_chart(group_bars(g, tf))
+        show_df(g[["Business type", "Signal", "Rating", "1D", "5D", "1M", "3M", "% above 50-day", "% up today",
+                   "Volatility %", "Leader today", "Laggard today"]].rename(columns={"Business type": "Category"})
+                .sort_values("Rating", ascending=False),
+                column_config={
+                    "Rating": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+                    "1D": st.column_config.NumberColumn(format="%+.1f%%"), "5D": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "1M": st.column_config.NumberColumn(format="%+.1f%%"), "3M": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "% above 50-day": st.column_config.NumberColumn(format="%.0f%%"),
+                    "% up today": st.column_config.NumberColumn(format="%.0f%%"),
+                    "Volatility %": st.column_config.NumberColumn(format="%.0f%%")})
+
+    st.markdown("### Coin scanner")
+    s = coins.copy()
+    s["Coin"] = s["Ticker"].map(lambda t: NAME_OF.get(t, t))
+    s["Category"] = s["Ticker"].map(lambda t: CATEGORY_OF.get(t, "Other"))
+    s = s[s["Category"].isin(selected)]
+    total = len(s)
+    s["Signal"] = s["Score"].map(signal_label)
+    s = s[s["dollar_vol"] >= flt["min_vol_m"] * 1e6]
+    if flt["signal"] != "All":
+        s = s[s["Signal"] == flt["signal"]]
+    if flt["unusual"]:
+        s = s[s["Rel. volume"] >= 1.5]
+    if flt["hide_vol"]:
+        s = s[s["Volatility %"] < flt["vol_limit"]]
+    if flt["search"]:
+        q = flt["search"].upper()
+        s = s[s["Ticker"].str.contains(q, regex=False) | s["Coin"].str.upper().str.contains(q, regex=False)]
+    col, asc = PULSE_SORTS[flt["sort"]]
+    s = s.sort_values(col, ascending=asc, na_position="last").head(flt["limit"])
+    if s.empty:
+        st.info("No coins match these filters.")
+        st.session_state["crypto_tickers"] = []
+    else:
+        s["Flags"] = s.apply(lambda r: flags(r, flt["vol_limit"]), axis=1)
+        st.session_state["crypto_tickers"] = list(s["Ticker"])
+        show_df(s[["Coin", "Category", "Signal", "Rating", "Price", "1d %", "5d %", "1m %", "Rel. volume", "RSI",
+                   "Volatility %", "Flags"]],
+                column_config={
+                    "Rating": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+                    "Price": st.column_config.NumberColumn(format="$%.6g"),
+                    "1d %": st.column_config.NumberColumn(format="%+.1f%%"), "5d %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "1m %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+                    "RSI": st.column_config.NumberColumn(format="%.0f"),
+                    "Volatility %": st.column_config.NumberColumn(format="%.0f%%")})
+    st.caption(f"Updated {now_et()} ET · showing {len(s)} of {total} coins in the selected categories · "
+               f"loaded {p['loaded']} of {p['requested']} tracked coins.")
+
+
+def render_crypto_pulse(weights: dict):
+    st.markdown("Scans the major coins and rates whether crypto is trending **bullish or bearish**, warns when "
+                "**volatility** is rising, and breaks the market out by **category**. The rating always uses the full "
+                "scan; the filters only change what's shown.")
+    f1, f2 = st.columns([5, 1.5])
+    selected = f1.multiselect("Categories", CATEGORIES, default=CATEGORIES, key="cp_cats")
+    refresh = f2.selectbox("Auto-refresh", list(PULSE_REFRESH), index=1, key="cp_refresh")
+    g1, g2, g3 = st.columns([3, 2, 2])
+    with g1:
+        ctl("Signal")
+        sig = segmented("Signal", ["All", "Bullish", "Neutral", "Bearish"], "All", "cp_sig")
+    sort = g2.selectbox("Sort coins by", list(PULSE_SORTS), key="cp_sort")
+    search = g3.text_input("Find coin", key="cp_search").strip()
+    with st.expander("More filters"):
+        m1, m2, m3 = st.columns(3)
+        min_vol_m = m1.number_input("Min traded today ($ millions)", 0, 100_000, 0, 50, key="cp_minvol")
+        vol_limit = m2.slider("Flag volatility above (% a year)", 40, 300, 120, 10, key="cp_vlim")
+        limit = m3.number_input("Rows to show", 10, 100, 40, 10, key="cp_limit")
+        h1, h2 = st.columns(2)
+        unusual = h1.checkbox("Only unusual volume (1.5x or more)", value=False, key="cp_unusual")
+        hide_vol = h2.checkbox("Hide very volatile coins", value=False, key="cp_hide")
+    flt = {"signal": sig, "sort": sort, "search": search, "min_vol_m": float(min_vol_m), "vol_limit": vol_limit,
+           "limit": int(limit), "unusual": unusual, "hide_vol": hide_vol}
+    wkey = tuple(sorted(weights.items()))
+    refreshing(crypto_pulse_results, every=PULSE_REFRESH[refresh])(wkey, selected, flt)
+
+
+def crypto_forecast():
+    board = load_crypto_board(())
+    results = {}
+    for name, sym in (("Bitcoin", "BTC-USD"), ("Ethereum", "ETH-USD")):
+        try:
+            bar = get_daily(sym)
+            f = forecast_coin(sym, f"{bar.index[-1]:%Y-%m-%d}") if len(bar) else {"ok": False}
+        except Exception as e:
+            f = {"ok": False, "reason": f"The forecast failed: {e}"}
+        q = quote(board, sym)
+        note = (f"Today so far (UTC day): {q['pct']:+.2f}%. There's no futures or overnight-session signal for crypto, "
+                "so this page shows the statistical forecast only." if q else "Live signals aren't available right now.")
+        results[name] = (f, note)
+    lines = []
+    for name, (f, _) in results.items():
+        if f.get("ok") and f["horizons"][1]["model"].get("ok"):
+            p = f["horizons"][1]["model"]["p_up"] * 100
+            lines.append(f"**{name}:** model {p:.0f}% up for today's close at 00:00 UTC "
+                         f"({edge_text(f['horizons'][1]['test'].get('edge', ''))}).")
+    if lines:
+        st.info("  \n".join(lines))
+    for col, (name, (f, note)) in zip(st.columns(2), results.items()):
+        with col:
+            forecast_card(name, f, None, note, crypto=True)
+    st.warning("**Please read:** crypto is far more volatile than stocks, and these statistical estimates are not "
+               "reliable predictions. The tests above usually show little or no edge, and a single headline can move "
+               "prices 10% in minutes. Use the ranges to see how much a coin can move, not to time trades. "
+               "Not financial advice.")
+
+
+def render_crypto(weights: dict):
+    favs = tuple(f for f in st.session_state.get("favorites", []) if is_crypto(f))[:10]
+    wkey = tuple(sorted(weights.items()))
+    st.markdown("Bitcoin, Ethereum and the biggest coins. Crypto trades 24 hours a day, 7 days a week, so there's no "
+                "open, close or weekend gap. Refreshes automatically (set the rate in the sidebar).")
+    refreshing(crypto_tape)(favs)
+    st.write("")
+    ctl("Crypto view")
+    view = segmented("Crypto view", ["Live board", "Analyze a coin", "Market pulse", "Forecast"], "Live board",
+                     "crypto_view")
+    if view == "Live board":
+        refreshing(crypto_live)(wkey, favs)
+    elif view == "Analyze a coin":
+        render_crypto_analyze(weights)
+    elif view == "Market pulse":
+        render_crypto_pulse(weights)
+    else:
+        refreshing(crypto_forecast)()
+    tickers = st.session_state.get("crypto_tickers", [])
+    if view in ("Live board", "Market pulse") and tickers:
+        p1, p2, p3 = st.columns([2, 1, 1])
+        pick = p1.selectbox("Open a coin", tickers, format_func=lambda s: f"{NAME_OF.get(s, s)} ({s.replace('-USD', '')})",
+                            key="crypto_pick")
+        for col in (p2, p3):
+            col.write("")
+            col.write("")
+        p2.button("Open in Analyze", on_click=open_coin, args=(pick,), key="crypto_open")
+        p3.button("☆ Add to favorites", on_click=add_favorites, args=([pick],), key="crypto_addfav")
 
 
 # ======================= FAVORITES =======================
@@ -1566,6 +2054,11 @@ elif section == "Trading":
         render_trading(weights)
     except Exception as e:
         st.error(f"Trading page error: {e}")
+elif section == "Crypto":
+    try:
+        render_crypto(weights)
+    except Exception as e:
+        st.error(f"Crypto error: {e}")
 elif section == "Favorites":
     try:
         render_favorites(weights)

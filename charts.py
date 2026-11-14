@@ -25,7 +25,7 @@ def _style(fig: go.Figure, height: int, rangebreaks: list | None = None) -> go.F
 
 def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[str],
                 panels: list[str], interval: str, intraday: bool = False, us_hours: bool = True,
-                prepost: bool = False) -> go.Figure:
+                prepost: bool = False, trades_24_7: bool = False) -> go.Figure:
     """df must already contain indicator columns (see analyzer.add_indicators)."""
     d = df.loc[start:end]
     n = len(panels)
@@ -76,7 +76,9 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
                                      line=dict(color="#f59e0b", width=1.3)), row=r, col=1)
             fig.update_yaxes(title_text="MACD", row=r, col=1)
         r += 1
-    if intraday:  # hide nights and weekends so intraday bars sit side by side
+    if trades_24_7:  # crypto never closes, so nothing to hide
+        breaks = None
+    elif intraday:  # hide nights and weekends so intraday bars sit side by side
         breaks = [dict(bounds=["sat", "mon"])]
         if us_hours:
             breaks.append(dict(bounds=[20, 4] if prepost else [16, 9.5], pattern="hour"))
@@ -133,7 +135,8 @@ def group_bars(df: pd.DataFrame, col: str) -> go.Figure:
     return _style(fig, max(320, 28 * len(d) + 80))
 
 
-def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str = "SPY") -> go.Figure:
+def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str = "SPY",
+                   breaks: str = "us") -> go.Figure:
     fig = go.Figure(go.Scatter(x=df.index, y=df["Close"], name=name, line=dict(color=BLUE, width=2)))
     if float(df["Volume"].sum()) > 0:
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
@@ -142,7 +145,8 @@ def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str 
     if prev_close:
         fig.add_hline(y=prev_close, line_dash="dash", line_color="rgba(128,128,128,0.6)",
                       annotation_text="Prev close", annotation_position="top left")
-    return _style(fig, 300, [dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])
+    return _style(fig, 300, None if breaks == "none" else
+                  [dict(bounds=["sat", "mon"]), dict(bounds=[16, 9.5], pattern="hour")])
 
 
 def _fmt_vol(v: float, measure: str) -> str:
@@ -212,7 +216,7 @@ def asia_lines(df: pd.DataFrame) -> go.Figure:
     return _style(fig, 360)
 
 
-def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str) -> go.Figure:
+def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str, weekend_gaps: bool = True) -> go.Figure:
     """Recent closes plus a widening 50% / 90% range for the coming sessions (no drift assumed)."""
     fig = go.Figure()
     x = list(cone_df.index)
@@ -221,4 +225,4 @@ def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str) -> go.Figure:
         fig.add_trace(go.Scatter(x=x + x[::-1], y=list(cone_df[hi]) + list(cone_df[lo])[::-1], fill="toself",
                                  fillcolor=fill, line=dict(width=0), hoverinfo="skip", name=label))
     fig.add_trace(go.Scatter(x=hist.index, y=hist, name=name, line=dict(color=BLUE, width=2)))
-    return _style(fig, 340, [dict(bounds=["sat", "mon"])])
+    return _style(fig, 340, [dict(bounds=["sat", "mon"])] if weekend_gaps else None)

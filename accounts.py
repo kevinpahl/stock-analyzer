@@ -23,6 +23,7 @@ MIN_PASSWORD, MAX_PASSWORD = 8, 128
 PBKDF2_ITERS = 200_000
 MAX_FAILS, LOCK_SECONDS = 5, 15 * 60
 MAX_FAVS = 50
+TOKEN_DAYS = 30
 GENERIC_LOGIN_ERROR = "Wrong username or password."
 
 
@@ -75,6 +76,9 @@ class UpstashStore:
 
     def set_new(self, key, value) -> bool:
         return self._cmd("SET", key, value, "NX") == "OK"
+
+    def set_ex(self, key, value, seconds):
+        self._cmd("SET", key, value, "EX", int(seconds))
 
     def delete(self, key):
         self._cmd("DEL", key)
@@ -133,6 +137,12 @@ class FileStore:
             d = self._load()
             old = self._live(d, key)
             d[key] = {"v": value, "exp": old.get("exp") if old else None}
+            self._save(d)
+
+    def set_ex(self, key, value, seconds):
+        with self._lock:
+            d = self._load()
+            d[key] = {"v": value, "exp": time.time() + seconds}
             self._save(d)
 
     def set_new(self, key, value) -> bool:
@@ -226,6 +236,38 @@ class Accounts:
         u, rec = self._verify(username, password)
         return u, clean_symbols(rec.get("favorites"))
 
+    # ---- "stay signed in" tokens: only a hash of the token is stored, and it expires after 30 days ----
+    @staticmethod
+    def _tkey(token: str) -> str:
+        return "sa:tok:" + hashlib.sha256(token.encode()).hexdigest()
+
+    def issue_token(self, username: str) -> str:
+        u = self._norm(username)
+        rec = self._record(u)
+        if rec is None:
+            raise AccountError("This account no longer exists.")
+        token = secrets.token_urlsafe(32)
+        self.store.set_ex(self._tkey(token), json.dumps({"u": u, "epoch": rec.get("epoch", 0)}),
+                          TOKEN_DAYS * 86400)
+        return token
+
+    def resume(self, token: str):
+        """(username, favorites) for a valid saved-login token, else None."""
+        if not token or len(token) > 100:
+            return None
+        raw = self.store.get(self._tkey(token))
+        if not raw:
+            return None
+        info = json.loads(raw)
+        rec = self._record(info["u"])
+        if rec is None or rec.get("epoch", 0) != info.get("epoch", 0):
+            return None   # account deleted or password changed since this token was issued
+        return info["u"], clean_symbols(rec.get("favorites"))
+
+    def revoke_token(self, token: str) -> None:
+        if token:
+            self.store.delete(self._tkey(token))
+
     def set_favorites(self, username: str, favorites) -> None:
         u = self._norm(username)
         rec = self._record(u)
@@ -238,7 +280,8 @@ class Accounts:
         u, rec = self._verify(username, old)
         self._check_rules(new)
         salt = secrets.token_bytes(16)
-        rec.update(salt=salt.hex(), hash=self._hash(new, salt), iters=PBKDF2_ITERS)
+        rec.update(salt=salt.hex(), hash=self._hash(new, salt), iters=PBKDF2_ITERS,
+                   epoch=rec.get("epoch", 0) + 1)   # signs out every saved login on other devices
         self.store.set(self._ukey(u), json.dumps(rec))
 
     def delete(self, username: str, password: str) -> None:

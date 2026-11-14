@@ -11,6 +11,7 @@ Sections (switch at the top of the page):
 - **Trading**: scrolling live ticker tape (your favorites first), US index / futures / rates / commodities boards,
   intraday S&P and Nasdaq charts, most-active stocks, the Asian sessions (open/closed status, live moves, how Asia has
   historically led the US close), and a tested statistical forecast for the S&P 500 and Nasdaq with live signals.
+- **Forecast**: pick any single stock, ETF, index or coin and get the tested up/down probability and price ranges.
 - **Crypto**: the same tools for coins (BTC, ETH, SOL and ~25 more, 24/7): live ticker tape and board, Analyze a coin
   (live ranges 1D to 1Y, bar sizes 1 min to 1 day, Buy/Hold/Sell score vs Bitcoin), a coin market pulse (bullish/bearish rating,
   volatility, volume waterfall by category such as Layer 1, DeFi, Meme) and a tested daily forecast (UTC close).
@@ -38,3 +39,13 @@ Accounts need a small database. The free Upstash Redis tier works well:
 Without them, accounts are kept in a local file (`accounts_local.json`), which works on your own PC but is erased
 when Streamlit Cloud restarts the app. Passwords are stored only as salted hashes; five wrong tries lock an account
 for 15 minutes. There is no password reset, so you (the owner) can delete a user's key in the Upstash console.
+
+## Stay signed in
+After you log in (with "Keep me signed in" ticked) a cookie keeps you signed in for 30 days on that device, even if you
+close the app. Only a hash of the token is stored on the server. Logging out, or changing your password, ends it.
+This needs the Upstash database (above); with the local-file fallback it resets when Streamlit Cloud restarts.
+
+## Install on an iPad (home-screen app)
+No extra files are needed; the icon is built into `app.py`.
+On the iPad open your app's address in **Safari**, tap Share, **Add to Home Screen**, then Add. It opens full screen with
+its own icon. Sign in once inside the home-screen app (it keeps its own storage, separate from Safari).

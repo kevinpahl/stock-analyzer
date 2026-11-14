@@ -219,5 +219,7 @@ def live_lean(fut_pct=None, asia_pct=None, vix_pct=None, idx_pct=None) -> dict |
 
 
 def edge_text(edge: str) -> str:
+    if edge == "":
+        return "not tested (too little history)"
     return {"slight edge": "slight edge in testing", "marginal": "marginal edge in testing"}.get(
         edge, "no reliable edge in testing")

@@ -16,16 +16,17 @@ QUICK_PICKS = {
     "Dow Jones (^DJI)": "^DJI", "Nasdaq Composite (^IXIC)": "^IXIC",
     "Russell 2000 (^RUT)": "^RUT", "VIX (^VIX)": "^VIX",
     "SPY (S&P 500 ETF)": "SPY", "QQQ (Nasdaq-100 ETF)": "QQQ",
+    "Bitcoin (BTC-USD)": "BTC-USD", "Ethereum (ETH-USD)": "ETH-USD",
 }
 OVERVIEW = [("S&P 500", "^GSPC"), ("Nasdaq", "^IXIC"), ("Dow", "^DJI"),
             ("Russell 2000", "^RUT"), ("VIX", "^VIX")]
 
 INTERVALS = ["Daily", "Weekly", "Monthly", "Quarterly"]
-PRESETS = ["1M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "Max"]
+PRESETS = ["1M", "2M", "3M", "6M", "YTD", "1Y", "3Y", "5Y", "10Y", "Max"]
 
 _RULES = {"Daily": None, "Weekly": "W-FRI", "Monthly": "ME", "Quarterly": "QE"}
 _OLD_RULES = {"ME": "M", "QE": "Q"}
-_OFFSETS = {"1M": pd.DateOffset(months=1), "3M": pd.DateOffset(months=3), "6M": pd.DateOffset(months=6),
+_OFFSETS = {"1M": pd.DateOffset(months=1), "2M": pd.DateOffset(months=2), "3M": pd.DateOffset(months=3), "6M": pd.DateOffset(months=6),
             "1Y": pd.DateOffset(years=1), "3Y": pd.DateOffset(years=3), "5Y": pd.DateOffset(years=5),
             "10Y": pd.DateOffset(years=10)}
 
@@ -42,8 +43,15 @@ def is_index(sym: str) -> bool:
     return sym.startswith("^")
 
 
+def is_crypto(sym: str) -> bool:
+    """Yahoo lists coins as BTC-USD, ETH-USD, ... They trade 24/7 (no open, close or weekends)."""
+    return sym.upper().endswith("-USD") and not sym.startswith("^")
+
+
 def benchmark_for(sym: str) -> str | None:
     """What to compare a symbol against for relative strength (None = it IS the market)."""
+    if is_crypto(sym):  # coins are compared with Bitcoin, not the stock market
+        return None if sym == "BTC-USD" else "BTC-USD"
     if sym in {"SPY", "VOO", "IVV", "^GSPC", "^SPX"}:
         return None
     return "^GSPC" if is_index(sym) else "SPY"
@@ -71,15 +79,21 @@ def preset_start(label: str, end: pd.Timestamp, first: pd.Timestamp) -> pd.Times
 
 
 # ---- live / intraday ----
-INTRADAY = ["1m", "5m", "15m", "30m", "1h"]
-INTRADAY_MAX_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730}  # Yahoo's lookback limits
-LIVE_RANGES = {"1D": ("1d", 1), "5D": ("5d", 5), "1M": ("1mo", 30)}
+INTRADAY = ["1m", "5m", "15m", "30m", "1h", "1d"]
+INTRADAY_MAX_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730, "1d": 36500}  # Yahoo's lookback limits
+LIVE_RANGES = {"1D": ("1d", 1), "5D": ("5d", 5), "1M": ("1mo", 30), "2M": ("60d", 60), "3M": ("3mo", 90),
+               "6M": ("6mo", 180), "1Y": ("1y", 365)}
+BAR_LABELS = {"1 min": "1m", "5 min": "5m", "15 min": "15m", "30 min": "30m", "1 hour": "1h", "1 day": "1d"}
 
 
 def live_params(interval: str, rng: str) -> tuple[str, str, str]:
     """(yfinance period, bar size actually used, note). Coarsens the bars if Yahoo can't go back that far."""
     period, days = LIVE_RANGES[rng]
     note = ""
+    if interval == "1d":
+        if days < 30:
+            return "1mo", interval, "Daily bars need a longer range, so 1 month is shown."
+        return period, interval, note
     if days > INTRADAY_MAX_DAYS[interval]:
         for alt in INTRADAY:
             if INTRADAY_MAX_DAYS[alt] >= days:
@@ -88,3 +102,9 @@ def live_params(interval: str, rng: str) -> tuple[str, str, str]:
                 interval = alt
                 break
     return period, interval, note
+
+
+def live_days(rng: str, interval: str) -> int:
+    """How many calendar days the chosen live range covers (at least 30 for daily bars)."""
+    days = LIVE_RANGES[rng][1]
+    return max(days, 30) if interval == "1d" else days

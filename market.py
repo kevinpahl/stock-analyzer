@@ -81,7 +81,8 @@ def regime_label(score: float) -> str:
 
 # ---------------------------------------------------------------- per-symbol stats
 def symbol_stats(data: dict[str, pd.DataFrame], weights: dict | None = None,
-                 include_indexes: bool = False) -> pd.DataFrame:
+                 include_indexes: bool = False, periods_per_year: int = 252,
+                 volume_is_dollars: bool = False) -> pd.DataFrame:
     """One row per stock/ETF (indexes excluded): moves, volatility, RSI, breadth flags, technical score."""
     rows = []
     for t, raw in data.items():
@@ -103,12 +104,12 @@ def symbol_stats(data: dict[str, pd.DataFrame], weights: dict | None = None,
         sma200 = c.rolling(200).mean().iloc[-1] if len(c) >= 200 else np.nan
         avg_vol = float(v.iloc[-21:-1].mean())
         prior = c.iloc[-21:-1]
-        lo, hi = c.iloc[-252:].min(), c.iloc[-252:].max()
+        lo, hi = c.iloc[-periods_per_year:].min(), c.iloc[-periods_per_year:].max()
         rows.append({
             "Ticker": t, "Price": px, "1d %": chg(1), "5d %": chg(5), "1m %": chg(21), "3m %": chg(63),
             "Rel. volume": float(v.iloc[-1]) / avg_vol if avg_vol > 0 else np.nan,
             "RSI": float(rsi(c).iloc[-1]),
-            "Volatility %": float(r.iloc[-20:].std() * np.sqrt(252) * 100),
+            "Volatility %": float(r.iloc[-20:].std() * np.sqrt(periods_per_year) * 100),
             "Score": score, "Rating": (score + 2) / 4 * 100 if not np.isnan(score) else np.nan,
             "above50": bool(px > sma50) if not np.isnan(sma50) else np.nan,
             "above200": bool(px > sma200) if not np.isnan(sma200) else np.nan,
@@ -116,8 +117,9 @@ def symbol_stats(data: dict[str, pd.DataFrame], weights: dict | None = None,
             "new_high": bool(px >= prior.max()), "new_low": bool(px <= prior.min()),
             "pos52": float((px - lo) / (hi - lo)) if hi > lo else np.nan,
             "avg_vol": avg_vol,
-            "Volume": float(v.iloc[-1]), "dollar_vol": px * float(v.iloc[-1]),
-            "avg_dollar_vol": float((c * v).iloc[-21:-1].mean()),
+            "Volume": float(v.iloc[-1]),
+            "dollar_vol": float(v.iloc[-1]) if volume_is_dollars else px * float(v.iloc[-1]),
+            "avg_dollar_vol": float((v if volume_is_dollars else c * v).iloc[-21:-1].mean()),
         })
     df = pd.DataFrame(rows)
     return df.set_index("Ticker", drop=False) if not df.empty else df

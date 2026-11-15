@@ -481,9 +481,9 @@ def drop_url_token():
 # Runs once per visit when nobody is signed in: if this browser kept a login token in its own storage, reload the page
 # once with the token in the address so the server can read it (the server can't see browser storage directly).
 BRIDGE_JS = """var w=window.parent,ls=null,ss=null;try{ls=w.localStorage;ss=w.sessionStorage}catch(e){}
-var t=ls&&ls.getItem('sa_login'),u=new URL(w.location.href);
+var t=ls&&ls.getItem('sa_login'),u=new URL(APP.location.href);
 if(!u.searchParams.get('s'))toast(t?'Restoring your saved login...':'No saved login found in this browser.');
-if(t&&!u.searchParams.get('s')&&ss&&!ss.getItem('sa_tried')){ss.setItem('sa_tried','1');u.searchParams.set('s',t);w.location.replace(u.toString());}"""
+if(t&&!u.searchParams.get('s')&&ss&&!ss.getItem('sa_tried')){ss.setItem('sa_tried','1');u.searchParams.set('s',t);APP.location.replace(u.toString());}"""
 
 
 def queue_cookie(token: str | None):
@@ -500,14 +500,16 @@ e.textContent=m;d.body.appendChild(e);setTimeout(function(){e.remove()},12000);}
 def run_js(js: str):
     """Run a snippet of JavaScript on the page. Newer Streamlit runs it directly via st.html; older versions use a
     tiny iframe (which Streamlit is retiring), and either way the snippet reaches the page through `window.parent`."""
-    body = f"<script>try{{var d=window.parent.document;{TOAST_JS}{js}}}catch(e){{}}</script>"
+    # APP = the window that holds the app itself (it may reload itself, but a sandboxed app can't navigate its parent)
+    def body(app: str) -> str:
+        return f"<script>try{{var APP={app},d=window.parent.document;{TOAST_JS}{js}}}catch(e){{}}</script>"
     try:
-        st.html(body, unsafe_allow_javascript=True)
+        st.html(body("window"), unsafe_allow_javascript=True)
     except Exception:
         pass
     try:      # also via the older iframe route when it still exists; the snippets are safe to run twice
         import streamlit.components.v1 as components
-        components.html(body, height=0)
+        components.html(body("window.parent"), height=0)
     except Exception:
         pass
 
@@ -548,6 +550,8 @@ def try_resume_login():
         ss["resume_token"] = token
         ss["auto_login"] = True
         drop_url_token()
+        run_js("try{window.parent.sessionStorage.removeItem('sa_tried')}catch(e){}"
+               f"toast('Signed in automatically.');")
     else:
         drop_url_token()
         queue_cookie(None)   # expired or revoked: stop sending it

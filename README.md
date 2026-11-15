@@ -8,6 +8,7 @@ Sections (switch at the top of the page):
   Chart view **Live** = bars from 1 min to 1 day over ranges 1D, 5D, 1M, 2M, 3M, 6M or 1Y (optional extended hours);
   **History** = daily / weekly / monthly / quarterly bars over any range or custom dates.
   Works for stocks, ETFs and indexes (e.g. ^GSPC). 9/20/50/200-day moving averages, Bollinger, volume, RSI, MACD.
+  Green up / red down arrows on the chart mark where the technical score moved into Buy / Sell territory (toggle "Buy/sell arrows").
 - **Trading**: scrolling live ticker tape (your favorites first), US index / futures / rates / commodities boards,
   intraday S&P and Nasdaq charts, most-active stocks, the Asian sessions (open/closed status, live moves, how Asia has
   historically led the US close), and a tested statistical forecast for the S&P 500 and Nasdaq with live signals.

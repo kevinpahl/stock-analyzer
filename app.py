@@ -455,10 +455,34 @@ COOKIE = "sa_login"
 
 
 def saved_login_token() -> str:
+    """The stay-signed-in token the browser sent: from the address (?s=...) or from the cookie."""
+    try:
+        t = st.query_params.get("s")
+        if isinstance(t, list):
+            t = t[0] if t else ""
+        if t:
+            return str(t)
+    except Exception:
+        pass
     try:
         return st.context.cookies.get(COOKIE) or ""
     except Exception:
         return ""
+
+
+def drop_url_token():
+    try:
+        if "s" in st.query_params:
+            del st.query_params["s"]
+    except Exception:
+        pass
+
+
+# Runs once per visit when nobody is signed in: if this browser kept a login token in its own storage, reload the page
+# once with the token in the address so the server can read it (the server can't see browser storage directly).
+BRIDGE_JS = """var w=window.parent,ls=null,ss=null;try{ls=w.localStorage;ss=w.sessionStorage}catch(e){}
+var t=ls&&ls.getItem('sa_login'),u=new URL(w.location.href);
+if(t&&!u.searchParams.get('s')&&ss&&!ss.getItem('sa_tried')){ss.setItem('sa_tried','1');u.searchParams.set('s',t);w.location.replace(u.toString());}"""
 
 
 def queue_cookie(token: str | None):
@@ -487,9 +511,11 @@ def emit_cookie_script():
     if not op:
         return
     if op == "clear":
-        js = f"d.cookie='{COOKIE}=; Max-Age=0; Path=/; SameSite=Lax; Secure';"
+        js = (f"d.cookie='{COOKIE}=; Max-Age=0; Path=/; SameSite=Lax; Secure';"
+              "try{window.parent.localStorage.removeItem('sa_login')}catch(e){}")
     else:
-        js = (f"d.cookie='{COOKIE}={op}; Max-Age={TOKEN_DAYS * 86400}; Path=/; SameSite=Lax; Secure';")
+        js = (f"d.cookie='{COOKIE}={op}; Max-Age={TOKEN_DAYS * 86400}; Path=/; SameSite=Lax; Secure';"
+              f"try{{window.parent.localStorage.setItem('sa_login','{op}')}}catch(e){{}}")
     run_js(js)
 
 
@@ -500,7 +526,9 @@ def try_resume_login():
         return
     ss["login_checked"] = True
     token = saved_login_token()
+    ss["token_seen"] = "address" if st.query_params.get("s") else "cookie" if token else "none"
     if not token:
+        run_js(BRIDGE_JS)
         return
     try:
         found = get_accounts().resume(token)
@@ -511,7 +539,9 @@ def try_resume_login():
         ss["user"], ss["favorites"] = user, list(dict.fromkeys(saved + ss["favorites"]))[:MAX_FAVS]
         ss["resume_token"] = token
         ss["auto_login"] = True
+        drop_url_token()
     else:
+        drop_url_token()
         queue_cookie(None)   # expired or revoked: stop sending it
 
 
@@ -609,6 +639,17 @@ def render_account_box():
                 st.rerun()
             except AccountError as e:
                 st.error(str(e))
+    with st.expander("Not staying signed in?"):
+        try:
+            kind = get_accounts().store.kind
+        except Exception:
+            kind = "unavailable"
+        seen = ss.get("token_seen", "n/a")
+        st.caption(f"Account storage: **{kind}**. Saved login found on this visit: "
+                   f"**{'yes, via ' + seen if seen in ('address', 'cookie') else 'no' if seen == 'none' else 'not checked'}**"
+                   f"{' (and it was accepted)' if ss.get('auto_login') else ''}. "
+                   "If storage says 'local file' the saved login is erased whenever the app restarts, so set up "
+                   "Upstash (see README). Private browsing and blocked site data also prevent it.")
     try:
         if get_accounts().store.kind == "local file":
             st.caption("⚠ Accounts are stored in a local file. On Streamlit Cloud they reset whenever the app "

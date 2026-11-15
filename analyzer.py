@@ -287,11 +287,13 @@ def technical_score_series(df: pd.DataFrame, bench: pd.Series | None = None,
     return score
 
 
-def signal_points(score: pd.Series, buy: float = 0.4, sell: float = -0.4, confirm: int = 2) -> pd.DataFrame:
-    """Dates where the technical score moved into Buy or Sell territory and stayed there for `confirm` days.
+def signal_points(score: pd.Series, buy: float = 0.4, sell: float = -0.4, confirm: int = 2,
+                  alternate: bool = False) -> pd.DataFrame:
+    """Dates where the technical score moved into Buy or Sell territory and held there for `confirm` days.
 
-    Uses only the score up to each day (no look-ahead). Arrows alternate: after a buy arrow the next one is a sell,
-    so a long uptrend gets one buy arrow rather than one per day. Columns: side ('buy'/'sell'), score, strong.
+    One arrow per entry into a zone (a dip back to Hold and a fresh move into Buy gives a new buy arrow).
+    Uses only the score up to each day (no look-ahead). With alternate=True arrows must alternate buy / sell.
+    Columns: side ('buy'/'sell'), score, strong.
     """
     s = score.dropna()
     rows, run, prev, last_side = [], 0, 0, None
@@ -299,10 +301,9 @@ def signal_points(score: pd.Series, buy: float = 0.4, sell: float = -0.4, confir
         zone = 1 if v >= buy else -1 if v <= sell else 0
         run = run + 1 if (zone == prev and zone != 0) else (1 if zone != 0 else 0)
         prev = zone
-        if zone != 0 and run >= confirm:
+        if zone != 0 and run == confirm:
             side = "buy" if zone == 1 else "sell"
-            if side != last_side:
+            if not alternate or side != last_side:
                 rows.append((dt, side, float(v), abs(v) >= 1.0))
                 last_side = side
-    out = pd.DataFrame(rows, columns=["date", "side", "score", "strong"]).set_index("date")
-    return out
+    return pd.DataFrame(rows, columns=["date", "side", "score", "strong"]).set_index("date")

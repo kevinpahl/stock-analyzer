@@ -11,9 +11,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.2"
+APP_VERSION = "6.3"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 13124, "backtest.py": 5320, "charts.py": 14816, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 13206, "backtest.py": 5320, "charts.py": 14816, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -905,6 +905,9 @@ def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: s
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
 
 
+ARROW_SENS = {"Fewer": (0.7, -0.7, 2), "Normal": (0.4, -0.4, 2), "More": (0.2, -0.2, 1)}
+
+
 def render_analyze(ticker: str, weights: dict):
     if not ticker:
         st.info("Enter a symbol in the sidebar.")
@@ -965,10 +968,14 @@ def render_analyze(ticker: str, weights: dict):
                               help="Green up arrow: the technical score moved into Buy territory. Red down arrow: Sell.")
     signals = None
     if show_arrows:
+        sens = o4.selectbox("Arrow sensitivity", list(ARROW_SENS), index=1, key="arrow_sens",
+                            help="More = earlier but noisier arrows. Fewer = only the strongest turns.")
         try:
-            signals = signal_points(technical_score_series(daily, get_bench(ticker), weights))
-        except Exception:
+            hi, lo, conf = ARROW_SENS[sens]
+            signals = signal_points(technical_score_series(daily, get_bench(ticker), weights), hi, lo, conf)
+        except Exception as e:
             signals = None
+            st.warning(f"Couldn't work out the buy/sell arrows for this symbol: {e}")
     if view == "Live":
         refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels, signals)
     else:
@@ -986,7 +993,7 @@ def render_analyze(ticker: str, weights: dict):
                         f"{signals.index[-1]:%b %d, %Y}. Choose a longer range (for example 3M or 1Y, or the History "
                         "view) to see the arrows.")
             st.caption(f"Arrows mark where the technical score (trend, momentum, MACD, Bollinger, relative strength; "
-                       f"the same one the backtester uses) moved into Buy or Sell territory and held for 2 days, "
+                       f"the same one the backtester uses) moved into Buy or Sell territory and held, "
                        f"using only data available on that day. Latest: {last['side'].upper()} on "
                        f"{signals.index[-1]:%b %d, %Y}. Past arrows don't predict the future; many trends hit "
                        f"false signals. Not financial advice.")

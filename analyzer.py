@@ -285,3 +285,24 @@ def technical_score_series(df: pd.DataFrame, bench: pd.Series | None = None,
     score = (F.fillna(0) * W).sum(axis=1) / den.where(den > 0)
     score[F["Trend"].isna()] = np.nan  # wait for the 200-day average before trusting any signal
     return score
+
+
+def signal_points(score: pd.Series, buy: float = 0.4, sell: float = -0.4, confirm: int = 2) -> pd.DataFrame:
+    """Dates where the technical score moved into Buy or Sell territory and stayed there for `confirm` days.
+
+    Uses only the score up to each day (no look-ahead). Arrows alternate: after a buy arrow the next one is a sell,
+    so a long uptrend gets one buy arrow rather than one per day. Columns: side ('buy'/'sell'), score, strong.
+    """
+    s = score.dropna()
+    rows, run, prev, last_side = [], 0, 0, None
+    for dt, v in s.items():
+        zone = 1 if v >= buy else -1 if v <= sell else 0
+        run = run + 1 if (zone == prev and zone != 0) else (1 if zone != 0 else 0)
+        prev = zone
+        if zone != 0 and run >= confirm:
+            side = "buy" if zone == 1 else "sell"
+            if side != last_side:
+                rows.append((dt, side, float(v), abs(v) >= 1.0))
+                last_side = side
+    out = pd.DataFrame(rows, columns=["date", "side", "score", "strong"]).set_index("date")
+    return out

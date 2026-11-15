@@ -11,13 +11,13 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.1"
+APP_VERSION = "6.2"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 12079, "backtest.py": 5320, "charts.py": 12763, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 13124, "backtest.py": 5320, "charts.py": 14816, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
-    from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze
+    from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze, signal_points, technical_score_series
     from backtest import run_backtest, split_metrics
     from charts import (asia_lines, equity_chart, fan_chart, group_bars, intraday_chart, price_chart,
                         regime_chart, session_timeline, trades_chart, volume_waterfall)
@@ -466,6 +466,22 @@ def queue_cookie(token: str | None):
     st.session_state["cookie_op"] = token if token else "clear"
 
 
+def run_js(js: str):
+    """Run a snippet of JavaScript on the page. Newer Streamlit runs it directly via st.html; older versions use a
+    tiny iframe (which Streamlit is retiring), and either way the snippet reaches the page through `window.parent`."""
+    body = f"<script>try{{var d=window.parent.document;{js}}}catch(e){{}}</script>"
+    try:
+        st.html(body, unsafe_allow_javascript=True)
+        return
+    except Exception:
+        pass
+    try:
+        import streamlit.components.v1 as components
+        components.html(body, height=0)
+    except Exception:
+        pass
+
+
 def emit_cookie_script():
     op = st.session_state.pop("cookie_op", None)
     if not op:
@@ -474,11 +490,7 @@ def emit_cookie_script():
         js = f"d.cookie='{COOKIE}=; Max-Age=0; Path=/; SameSite=Lax; Secure';"
     else:
         js = (f"d.cookie='{COOKIE}={op}; Max-Age={TOKEN_DAYS * 86400}; Path=/; SameSite=Lax; Secure';")
-    try:
-        import streamlit.components.v1 as components
-        components.html(f"<script>try{{var d=window.parent.document;{js}}}catch(e){{}}</script>", height=0)
-    except Exception:
-        pass
+    run_js(js)
 
 
 def try_resume_login():
@@ -498,6 +510,7 @@ def try_resume_login():
         user, saved = found
         ss["user"], ss["favorites"] = user, list(dict.fromkeys(saved + ss["favorites"]))[:MAX_FAVS]
         ss["resume_token"] = token
+        ss["auto_login"] = True
     else:
         queue_cookie(None)   # expired or revoked: stop sending it
 
@@ -547,7 +560,8 @@ def render_account_box():
     if msg:
         {"success": st.success, "error": st.error, "info": st.info}[msg[0]](msg[1])
     if user:
-        st.caption(f"Signed in as **{user}**. Your favorites are saved to your account.")
+        st.caption(f"Signed in as **{user}**. Your favorites are saved to your account."
+                   + (" ✓ Signed in automatically from your saved login." if ss.get("auto_login") else ""))
         st.button("Log out", on_click=do_logout, key="acct_logout")
         with st.expander("Account settings"):
             with st.form("pw_form", clear_on_submit=True):
@@ -653,7 +667,7 @@ def install_as_app():
     if st.session_state.get("pwa_done"):
         return
     st.session_state["pwa_done"] = True
-    js = """<script>try{var d=window.parent.document,h=d.head;
+    js = """var h=d.head;
 function add(t,a){var e=d.createElement(t);for(var k in a)e.setAttribute(k,a[k]);h.appendChild(e);}
 var m={name:'Stock Analyzer',short_name:'Stocks',start_url:window.parent.location.origin+'/',display:'standalone',
 background_color:'#0f172a',theme_color:'#0f172a',icons:[{src:'ICON192',sizes:'192x192',type:'image/png'}]};
@@ -664,12 +678,8 @@ add('meta',{name:'mobile-web-app-capable',content:'yes'});
 add('meta',{name:'apple-mobile-web-app-title',content:'Stocks'});
 add('meta',{name:'apple-mobile-web-app-status-bar-style',content:'default'});
 add('meta',{name:'theme-color',content:'#0f172a'});
-}catch(e){}</script>""".replace("ICON192", ICON_192).replace("ICON180", ICON_180)
-    try:
-        import streamlit.components.v1 as components
-        components.html(js, height=0)
-    except Exception:
-        pass
+""".replace("ICON192", ICON_192).replace("ICON180", ICON_180)
+    run_js(js)
 
 
 install_as_app()
@@ -790,7 +800,7 @@ def why_table(ticker: str, weights: dict):
 
 
 def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
-               overlays: list, panels: list):
+               overlays: list, panels: list, signals=None):
     """Intraday chart. Auto-refreshes."""
     period, eff, note = live_params(interval, rng)
     df = load_intraday(ticker, eff, period, prepost)
@@ -803,17 +813,17 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
     daily_bars = eff == "1d"
     if daily_bars:   # one bar per day: hide weekends for stocks, nothing for 24/7 coins
         fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, "Daily",
-                          trades_24_7=crypto)
+                          trades_24_7=crypto, signals=signals)
     else:
         fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, eff,
-                          intraday=True, us_hours=us, prepost=prepost, trades_24_7=crypto)
+                          intraday=True, us_hours=us, prepost=prepost, trades_24_7=crypto, signals=signals)
     show_chart(fig)
     last_bar = f"{cdf.index[-1]:%b %d}" if daily_bars else f"{cdf.index[-1]:%b %d, %H:%M} (exchange time)"
     st.caption(f"{len(cdf)} {eff} bars · last bar {last_bar}. Moving averages are measured in bars. " + note)
 
 
 def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: str, interval: str,
-                 overlays: list, panels: list):
+                 overlays: list, panels: list, signals=None):
     first_date, last_date = daily.index[0], daily.index[-1]
     if rng == "Custom":
         d1, d2 = st.columns(2)
@@ -837,7 +847,7 @@ def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: s
     r1.metric(f"Return ({rng})", f"{view['Close'].iloc[-1] / view['Close'].iloc[0] - 1:+.1%}")
     r2.metric("Range high", f"{view['High'].max():,.2f}")
     r3.metric("Range low", f"{view['Low'].min():,.2f}")
-    show_chart(price_chart(chart_df, start, end, ctype, overlays, panels, interval))
+    show_chart(price_chart(chart_df, start, end, ctype, overlays, panels, interval, signals=signals))
     st.caption(f"{len(view)} {interval.lower()} bars. Moving averages are measured in {interval.lower()} bars. "
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
 
@@ -889,7 +899,7 @@ def render_analyze(ticker: str, weights: dict):
         ctl("Chart")
         ctype = segmented("Chart", ["Candles", "Line"], "Candles", "ctype")
 
-    o1, o2, o3 = st.columns([4, 4, 2])
+    o1, o2, o3, o4 = st.columns([4, 4, 2, 2])
     overlays = o1.multiselect("Overlays", ["SMA 9", "SMA 20", "SMA 50", "SMA 200", "Bollinger bands"],
                               default=["SMA 9", "SMA 20", "SMA 50"], key="overlays")
     has_vol = float(daily["Volume"].iloc[-60:].sum()) > 0
@@ -898,10 +908,28 @@ def render_analyze(ticker: str, weights: dict):
     prepost = (o3.checkbox("Extended hours", value=False, key="ext")
                if view == "Live" and not is_crypto(ticker) else False)
 
+    show_arrows = o4.checkbox("Buy/sell arrows", value=True, key="arrows",
+                              help="Green up arrow: the technical score moved into Buy territory. Red down arrow: Sell.")
+    signals = None
+    if show_arrows:
+        try:
+            signals = signal_points(technical_score_series(daily, get_bench(ticker), weights))
+        except Exception:
+            signals = None
     if view == "Live":
-        refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels)
+        refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels, signals)
     else:
-        history_view(ticker, daily, idx, ctype, rng, interval, overlays, panels)
+        history_view(ticker, daily, idx, ctype, rng, interval, overlays, panels, signals)
+    if show_arrows and signals is not None:
+        if len(signals):
+            last = signals.iloc[-1]
+            st.caption(f"Arrows mark where the technical score (trend, momentum, MACD, Bollinger, relative strength; "
+                       f"the same one the backtester uses) moved into Buy or Sell territory and held for 2 days, "
+                       f"using only data available on that day. Latest: {last['side'].upper()} on "
+                       f"{signals.index[-1]:%b %d, %Y}. Past arrows don't predict the future; many trends hit "
+                       f"false signals. Not financial advice.")
+        else:
+            st.caption("No buy/sell arrows yet: the technical score hasn't held in Buy or Sell territory for this symbol.")
 
     st.markdown("### Why this signal")
     refreshing(why_table)(ticker, weights)

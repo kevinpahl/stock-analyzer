@@ -482,6 +482,7 @@ def drop_url_token():
 # once with the token in the address so the server can read it (the server can't see browser storage directly).
 BRIDGE_JS = """var w=window.parent,ls=null,ss=null;try{ls=w.localStorage;ss=w.sessionStorage}catch(e){}
 var t=ls&&ls.getItem('sa_login'),u=new URL(w.location.href);
+if(!u.searchParams.get('s'))toast(t?'Restoring your saved login...':'No saved login found in this browser.');
 if(t&&!u.searchParams.get('s')&&ss&&!ss.getItem('sa_tried')){ss.setItem('sa_tried','1');u.searchParams.set('s',t);w.location.replace(u.toString());}"""
 
 
@@ -490,16 +491,21 @@ def queue_cookie(token: str | None):
     st.session_state["cookie_op"] = token if token else "clear"
 
 
+# A small note at the bottom-left of the page so you can see whether the browser accepted the saved login.
+TOAST_JS = """function toast(m){var o=d.getElementById('sa_toast');if(o)o.remove();var e=d.createElement('div');e.id='sa_toast';
+e.style.cssText='position:fixed;left:12px;bottom:12px;z-index:99999;background:#0f172a;color:#fff;padding:8px 12px;border-radius:8px;font:13px sans-serif;max-width:80%';
+e.textContent=m;d.body.appendChild(e);setTimeout(function(){e.remove()},12000);}"""
+
+
 def run_js(js: str):
     """Run a snippet of JavaScript on the page. Newer Streamlit runs it directly via st.html; older versions use a
     tiny iframe (which Streamlit is retiring), and either way the snippet reaches the page through `window.parent`."""
-    body = f"<script>try{{var d=window.parent.document;{js}}}catch(e){{}}</script>"
+    body = f"<script>try{{var d=window.parent.document;{TOAST_JS}{js}}}catch(e){{}}</script>"
     try:
         st.html(body, unsafe_allow_javascript=True)
-        return
     except Exception:
         pass
-    try:
+    try:      # also via the older iframe route when it still exists; the snippets are safe to run twice
         import streamlit.components.v1 as components
         components.html(body, height=0)
     except Exception:
@@ -515,7 +521,9 @@ def emit_cookie_script():
               "try{window.parent.localStorage.removeItem('sa_login')}catch(e){}")
     else:
         js = (f"d.cookie='{COOKIE}={op}; Max-Age={TOKEN_DAYS * 86400}; Path=/; SameSite=Lax; Secure';"
-              f"try{{window.parent.localStorage.setItem('sa_login','{op}')}}catch(e){{}}")
+              f"try{{window.parent.localStorage.setItem('sa_login','{op}')}}catch(e){{}}"
+              "var c=d.cookie.indexOf('sa_login=')>=0,l=false;try{l=!!window.parent.localStorage.getItem('sa_login')}catch(e){}"
+              "toast('Login remembered on this browser. Cookie: '+(c?'saved':'blocked')+', browser storage: '+(l?'saved':'blocked'));")
     run_js(js)
 
 

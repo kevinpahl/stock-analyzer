@@ -23,7 +23,7 @@ def _style(fig: go.Figure, height: int, rangebreaks: list | None = None) -> go.F
     return fig
 
 
-def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool):
+def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool, exact: bool = False):
     """Buy / sell arrows on the price panel, snapped to the bar that contains each signal date."""
     span = float(d["High"].max() - d["Low"].min()) or 1.0
     pad = 0.035 * span
@@ -31,7 +31,11 @@ def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool):
     pts = {"buy": ([], [], []), "sell": ([], [], [])}
     seen = set()
     for dt, r in signals.iterrows():
-        if intraday:     # signals are daily: put them on the last bar of that day
+        if exact:        # signals were computed on these very bars: put each one on its own bar
+            pos = int(idx.get_indexer([dt])[0])
+            if pos < 0:
+                continue
+        elif intraday:   # signals are daily: put them on the last bar of that day
             pos = idx.searchsorted(dt.normalize() + pd.Timedelta(days=1)) - 1
             if pos < 0 or idx[pos].normalize() != dt.normalize():
                 continue
@@ -45,9 +49,10 @@ def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool):
         bar = d.iloc[pos]
         y = bar["Low"] - pad if r["side"] == "buy" else bar["High"] + pad
         label = ("STRONG " if r["strong"] else "") + r["side"].upper()
+        when = f"{dt:%b %d, %H:%M}" if exact else f"{dt:%b %d, %Y}"
         pts[r["side"]][0].append(idx[pos])
         pts[r["side"]][1].append(float(y))
-        pts[r["side"]][2].append(f"{label} signal<br>{dt:%b %d, %Y} · score {r['score']:+.2f}")
+        pts[r["side"]][2].append(f"{label} signal<br>{when} · score {r['score']:+.2f}")
     for side, sym, color, name in (("buy", "triangle-up", UP, "Buy signal"), ("sell", "triangle-down", DOWN, "Sell signal")):
         xs, ys, tx = pts[side]
         if xs:
@@ -58,7 +63,8 @@ def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool):
 
 def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[str],
                 panels: list[str], interval: str, intraday: bool = False, us_hours: bool = True,
-                prepost: bool = False, trades_24_7: bool = False, signals=None) -> go.Figure:
+                prepost: bool = False, trades_24_7: bool = False, signals=None,
+                signals_exact: bool = False) -> go.Figure:
     """df must already contain indicator columns (see analyzer.add_indicators).
     `signals`: optional DataFrame from analyzer.signal_points; drawn as buy (up) and sell (down) arrows."""
     d = df.loc[start:end]
@@ -111,7 +117,7 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
             fig.update_yaxes(title_text="MACD", row=r, col=1)
         r += 1
     if signals is not None and len(signals) and len(d):
-        _add_arrows(fig, d, signals, intraday and interval != "Daily" and interval != "1d")
+        _add_arrows(fig, d, signals, intraday and interval != "Daily" and interval != "1d", signals_exact)
     if trades_24_7:  # crypto never closes, so nothing to hide
         breaks = None
     elif intraday:  # hide nights and weekends so intraday bars sit side by side

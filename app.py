@@ -52,6 +52,21 @@ except ImportError as e:
             "big one means an old copy is still there. Also upload `requirements.txt`.")
     st.stop()
 
+# Warn (without stopping) if any file in the repo is an older copy than this app.py expects.
+_stale = []
+try:
+    _here = Path(__file__).parent
+    for _f, _size in EXPECTED_SIZES.items():
+        _p = _here / _f
+        if not _p.exists() or _p.stat().st_size != _size:
+            _stale.append(_f)
+except Exception:
+    _stale = []
+if _stale:
+    st.warning("**Some files in your repo look out of date: " + ", ".join(f"`{f}`" for f in _stale) +
+               ".** Upload the newest copy of each (same name, top level of the repo), commit, then reboot the app. "
+               "Until then you may see errors like \"unexpected keyword argument\".")
+
 # Colors are semi-transparent / inherited so the styling works in both light and dark themes.
 st.markdown("""
 <style>

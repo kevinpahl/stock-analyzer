@@ -11,9 +11,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.3"
+APP_VERSION = "6.5"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 13206, "backtest.py": 5320, "charts.py": 14816, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 15151, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -853,8 +853,8 @@ def why_table(ticker: str, weights: dict):
 
 
 def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
-               overlays: list, panels: list, signals=None):
-    """Intraday chart. Auto-refreshes."""
+               overlays: list, panels: list, signals=None, arrow_cfg=None, weights=None):
+    """Intraday chart. Auto-refreshes. With `arrow_cfg` the arrows are computed on the intraday bars themselves."""
     period, eff, note = live_params(interval, rng)
     df = load_intraday(ticker, eff, period, prepost)
     if df.empty or len(df) < 2:
@@ -868,8 +868,24 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
         fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, "Daily",
                           trades_24_7=crypto, signals=signals)
     else:
+        arrows, n_arrows = None, 0
+        if arrow_cfg is not None:
+            try:   # warm up on a longer stretch of bars so the 200-bar trend measure has data from the first bar shown
+                warm = load_intraday(ticker, eff, f"{WARM_DAYS[eff]}d", prepost)
+                if len(warm) < 220:
+                    warm = df
+                sc = technical_score_series(warm, None, weights)
+                arrows = signal_points(sc.loc[sc.index >= df.index[0]], *arrow_cfg, cooldown=12)
+                n_arrows = len(arrows)
+            except Exception as e:
+                st.warning(f"Couldn't work out intraday arrows: {e}")
         fig = price_chart(cdf, cdf.index[0], cdf.index[-1], ctype, overlays, panels, eff,
-                          intraday=True, us_hours=us, prepost=prepost, trades_24_7=crypto, signals=signals)
+                          intraday=True, us_hours=us, prepost=prepost, trades_24_7=crypto,
+                          signals=arrows if arrows is not None else signals, signals_exact=arrows is not None)
+        if arrows is not None:
+            note += (f" {n_arrows} buy/sell arrow{'s' if n_arrows != 1 else ''} in view, worked out on these {eff} bars "
+                     "(trend, momentum, MACD, Bollinger measured in bars) using only bars up to each point."
+                     " Move the Arrow sensitivity setting for more or fewer.")
     show_chart(fig)
     last_bar = f"{cdf.index[-1]:%b %d}" if daily_bars else f"{cdf.index[-1]:%b %d, %H:%M} (exchange time)"
     st.caption(f"{len(cdf)} {eff} bars · last bar {last_bar}. Moving averages are measured in bars. " + note)
@@ -905,7 +921,8 @@ def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: s
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
 
 
-ARROW_SENS = {"Fewer": (0.7, -0.7, 2), "Normal": (0.4, -0.4, 2), "More": (0.2, -0.2, 1)}
+WARM_DAYS = {"1m": 6, "5m": 30, "15m": 60, "30m": 60, "1h": 200}   # extra bars to warm up the indicators
+ARROW_SENS = {"Fewer": (0.8, -0.8, 3), "Normal": (0.5, -0.5, 3), "More": (0.3, -0.3, 2)}
 
 
 def render_analyze(ticker: str, weights: dict):
@@ -977,10 +994,12 @@ def render_analyze(ticker: str, weights: dict):
             signals = None
             st.warning(f"Couldn't work out the buy/sell arrows for this symbol: {e}")
     if view == "Live":
-        refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels, signals)
+        cfg = ARROW_SENS[sens] if show_arrows and signals is not None and lint != "1d" else None
+        refreshing(live_chart)(ticker, lint, lrng, prepost, ctype, overlays, panels, signals, cfg, weights)
     else:
         history_view(ticker, daily, idx, ctype, rng, interval, overlays, panels, signals)
-    if show_arrows and signals is not None:
+    intraday_arrows = view == "Live" and lint != "1d"
+    if show_arrows and signals is not None and not intraday_arrows:
         if len(signals):
             last = signals.iloc[-1]
             try:

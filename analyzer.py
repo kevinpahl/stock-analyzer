@@ -287,23 +287,38 @@ def technical_score_series(df: pd.DataFrame, bench: pd.Series | None = None,
     return score
 
 
-def signal_points(score: pd.Series, buy: float = 0.4, sell: float = -0.4, confirm: int = 2,
-                  alternate: bool = False) -> pd.DataFrame:
-    """Dates where the technical score moved into Buy or Sell territory and held there for `confirm` days.
+def signal_points(score: pd.Series, buy: float = 0.5, sell: float = -0.5, confirm: int = 3,
+                  alternate: bool = False, smooth: int = 3, cooldown: int = 5, rearm: bool = True) -> pd.DataFrame:
+    """Dates where the technical score moved into Buy or Sell territory and held there.
 
-    One arrow per entry into a zone (a dip back to Hold and a fresh move into Buy gives a new buy arrow).
-    Uses only the score up to each day (no look-ahead). With alternate=True arrows must alternate buy / sell.
-    Columns: side ('buy'/'sell'), score, strong.
+    Noise filters, all using only past data (no look-ahead):
+      smooth   - the score is averaged over the last few bars so one-bar flickers don't count;
+      confirm  - it must stay in the zone for this many bars;
+      cooldown - at least this many bars between two arrows;
+      rearm    - after a buy arrow, another buy needs the score to have fallen back through zero first
+                 (same for sell), so a wobble between Hold and Buy doesn't give a string of buys.
+    With alternate=True arrows must also alternate buy / sell. Columns: side ('buy'/'sell'), score, strong.
     """
     s = score.dropna()
-    rows, run, prev, last_side = [], 0, 0, None
-    for dt, v in s.items():
+    if smooth and smooth > 1:
+        s = s.ewm(span=smooth, adjust=False).mean()
+    rows, run, prev, last_side, last_pos = [], 0, 0, None, -10**9
+    armed = {"buy": True, "sell": True}
+    for i, (dt, v) in enumerate(s.items()):
+        if rearm:
+            if v <= 0:
+                armed["buy"] = True
+            if v >= 0:
+                armed["sell"] = True
         zone = 1 if v >= buy else -1 if v <= sell else 0
         run = run + 1 if (zone == prev and zone != 0) else (1 if zone != 0 else 0)
         prev = zone
         if zone != 0 and run == confirm:
             side = "buy" if zone == 1 else "sell"
-            if not alternate or side != last_side:
+            ok = armed[side] and (i - last_pos) >= cooldown and (not alternate or side != last_side)
+            if ok:
                 rows.append((dt, side, float(v), abs(v) >= 1.0))
-                last_side = side
+                last_side, last_pos = side, i
+                if rearm:
+                    armed[side] = False
     return pd.DataFrame(rows, columns=["date", "side", "score", "strong"]).set_index("date")

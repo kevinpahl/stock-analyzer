@@ -923,6 +923,15 @@ def render_analyze(ticker: str, weights: dict):
     if show_arrows and signals is not None:
         if len(signals):
             last = signals.iloc[-1]
+            try:
+                win_start = (pd.Timestamp.now() - pd.Timedelta(days=live_days(lrng, lint)) if view == "Live"
+                             else None if rng == "Custom" else preset_start(rng, daily.index[-1], daily.index[0]))
+            except Exception:
+                win_start = None
+            if win_start is not None and not (signals.index >= win_start.normalize()).any():
+                st.info(f"No arrows fall inside this chart window. The latest signal was a **{last['side'].upper()}** on "
+                        f"{signals.index[-1]:%b %d, %Y}. Choose a longer range (for example 3M or 1Y, or the History "
+                        "view) to see the arrows.")
             st.caption(f"Arrows mark where the technical score (trend, momentum, MACD, Bollinger, relative strength; "
                        f"the same one the backtester uses) moved into Buy or Sell territory and held for 2 days, "
                        f"using only data available on that day. Latest: {last['side'].upper()} on "

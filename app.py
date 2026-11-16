@@ -11,15 +11,15 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.5"
+APP_VERSION = "6.6"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 15151, "screener.py": 5203, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18501, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
     from analyzer import DEFAULT_WEIGHTS, add_indicators, analyze, signal_points, technical_score_series
     from backtest import run_backtest, split_metrics
-    from charts import (asia_lines, equity_chart, fan_chart, group_bars, intraday_chart, price_chart,
+    from charts import (asia_lines, compare_chart, equity_chart, fan_chart, group_bars, intraday_chart, price_chart,
                         regime_chart, session_timeline, trades_chart, volume_waterfall)
     from forecast import (HORIZONS, asia_bucket, asia_composite, asia_lead_table, cone, edge_text, live_lean,
                           model_forecast, range_for, vol_estimates, walk_forward)
@@ -28,7 +28,7 @@ try:
     from crypto import (CATEGORIES, CATEGORY_OF, COINS, CRYPTO_REGIME_WEIGHTS, NAME_OF, TOP_COINS, compute_crypto_pulse,
                         crypto_symbols)
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, session_fraction, signal_label, symbol_stats
-    from screener import MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
+    from screener import ASSET_TYPES, MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
     from utils import (BAR_LABELS, LIVE_RANGES, ETF_FOR, INDEX_NAMES, INTERVALS, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_crypto, is_index, live_days, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
@@ -867,13 +867,31 @@ def why_table(ticker: str, weights: dict):
     show_df(pd.DataFrame(rows), column_config={"Weight": st.column_config.NumberColumn(format="%.0f%%")})
 
 
+def intraday_signals(ticker: str, eff: str, df: pd.DataFrame, prepost: bool, weights: dict, arrow_cfg: tuple):
+    """Buy/sell arrows worked out on the intraday bars themselves (warmed up on a longer stretch of bars so the
+    200-bar trend measure has data from the first bar shown)."""
+    warm = load_intraday(ticker, eff, f"{WARM_DAYS[eff]}d", prepost)
+    if len(warm) < 220:
+        warm = df
+    sc = technical_score_series(warm, None, weights)
+    return signal_points(sc.loc[sc.index >= df.index[0]], *arrow_cfg, cooldown=12)
+
+
+def daily_signals(ticker: str, weights: dict, arrow_cfg: tuple):
+    return signal_points(technical_score_series(get_daily(ticker), get_bench(ticker), weights), *arrow_cfg)
+
+
 def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
-               overlays: list, panels: list, signals=None, arrow_cfg=None, weights=None):
-    """Intraday chart. Auto-refreshes. With `arrow_cfg` the arrows are computed on the intraday bars themselves."""
+               overlays: list, panels: list, signals=None, arrow_cfg=None, weights=None, mini: bool = False):
+    """Intraday chart. Auto-refreshes. With `arrow_cfg` the arrows are computed on the intraday bars themselves.
+    `mini` = a compact card for a grid of charts (title on the chart, no long caption)."""
     period, eff, note = live_params(interval, rng)
     df = load_intraday(ticker, eff, period, prepost)
     if df.empty or len(df) < 2:
-        st.info("No intraday bars available yet (the market may be closed, or this symbol has no intraday data).")
+        if mini:
+            st.caption(f"{ticker}: no intraday bars available (market closed, or no intraday data for this symbol).")
+        else:
+            st.info("No intraday bars available yet (the market may be closed, or this symbol has no intraday data).")
         return
     cdf = add_indicators(df)
     crypto = is_crypto(ticker)
@@ -885,12 +903,8 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
     else:
         arrows, n_arrows = None, 0
         if arrow_cfg is not None:
-            try:   # warm up on a longer stretch of bars so the 200-bar trend measure has data from the first bar shown
-                warm = load_intraday(ticker, eff, f"{WARM_DAYS[eff]}d", prepost)
-                if len(warm) < 220:
-                    warm = df
-                sc = technical_score_series(warm, None, weights)
-                arrows = signal_points(sc.loc[sc.index >= df.index[0]], *arrow_cfg, cooldown=12)
+            try:
+                arrows = intraday_signals(ticker, eff, df, prepost, weights, arrow_cfg)
                 n_arrows = len(arrows)
             except Exception as e:
                 st.warning(f"Couldn't work out intraday arrows: {e}")
@@ -901,6 +915,10 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
             note += (f" {n_arrows} buy/sell arrow{'s' if n_arrows != 1 else ''} in view, worked out on these {eff} bars "
                      "(trend, momentum, MACD, Bollinger measured in bars) using only bars up to each point."
                      " Move the Arrow sensitivity setting for more or fewer.")
+    if mini:
+        grid_style(fig, ticker, len(panels))
+        show_chart(fig)
+        return
     show_chart(fig)
     last_bar = f"{cdf.index[-1]:%b %d}" if daily_bars else f"{cdf.index[-1]:%b %d, %H:%M} (exchange time)"
     st.caption(f"{len(cdf)} {eff} bars · last bar {last_bar}. Moving averages are measured in bars. " + note)
@@ -934,6 +952,12 @@ def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: s
     show_chart(price_chart(chart_df, start, end, ctype, overlays, panels, interval, signals=signals))
     st.caption(f"{len(view)} {interval.lower()} bars. Moving averages are measured in {interval.lower()} bars. "
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
+
+
+def grid_style(fig, title: str, n_panels: int):
+    """Shorter chart with the symbol as its title, for the favorites grid."""
+    fig.update_layout(height=330 + 90 * n_panels, title=dict(text=f"<b>{title}</b>", x=0.01, y=0.98, font=dict(size=15)),
+                      margin=dict(l=6, r=6, t=44, b=6))
 
 
 WARM_DAYS = {"1m": 6, "5m": 30, "15m": 60, "30m": 60, "1h": 200}   # extra bars to warm up the indicators
@@ -1165,7 +1189,7 @@ def movers_results(weights: dict):
         bdf = get_daily("SPY")
         bench = bdf["Close"] if not bdf.empty else None
         ranked, stats = rank_movers(data, bench, p["mode"], p["top_n"], p["min_price"], p["min_vol"],
-                                    load_info if p["fund"] else None, weights)
+                                    load_info if p["fund"] else None, weights, p.get("types"))
     except Exception as e:
         st.error(f"Scan failed: {e}")
         return
@@ -1190,24 +1214,31 @@ def movers_results(weights: dict):
 
 
 def render_movers(weights: dict):
-    st.markdown("Finds what's moving, drops illiquid names, then **ranks the movers by the analyzer's score** so you "
-                "can see which big moves have technical backing and which look stretched.")
+    st.markdown("Finds what's moving across **stocks, ETFs, indexes, futures, currencies and crypto**, drops illiquid "
+                "names, then **ranks the movers by the analyzer's score** so you can see which big moves have "
+                "technical backing and which look stretched.")
     u1, u2, u3 = st.columns([2, 2, 1])
     uni = u1.selectbox("Universe", list(UNIVERSES), key="mv_uni")
     mode = u2.selectbox("Rank movers by", MOVER_MODES, key="mv_mode")
     top_n = u3.number_input("How many", 5, 50, 20, 5, key="mv_n")
     custom = (st.text_input("Tickers (comma-separated)", "AAPL, NVDA, TSLA, AMD, PLTR", key="mv_custom")
               if UNIVERSES[uni] == "custom" else "")
+    types = st.multiselect("Include", ASSET_TYPES, default=ASSET_TYPES, key="mv_types",
+                           help="Stocks, ETFs, indexes, futures, currencies and coins. Pick a built-in ETF, index or "
+                                "crypto list above to scan those. Yahoo's gainers/losers/most-active lists are stocks only.")
     f1, f2, f3, f4 = st.columns(4)
-    min_price = f1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="mv_price")
-    min_vol = f2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="mv_vol")
+    min_price = f1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="mv_price",
+                                help="Applies to stocks and ETFs only.")
+    min_vol = f2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="mv_vol",
+                              help="Applies to stocks and ETFs only. Indexes, futures, currencies and coins skip it.")
     with_fund = f3.checkbox("Include fundamentals (slower)", value=False, key="mv_fund",
                             help="Fetches P/E, growth and analyst data for each ranked stock.")
     auto = f4.checkbox("Auto-refresh every minute", value=False, key="mv_auto")
 
     if st.button("Scan market", type="primary", key="mv_run"):
         st.session_state["mv_params"] = {"uni": uni, "custom": custom, "mode": mode, "top_n": int(top_n),
-                                         "min_price": min_price, "min_vol": min_vol, "fund": with_fund}
+                                         "min_price": min_price, "min_vol": min_vol, "fund": with_fund,
+                                         "types": types or ASSET_TYPES}
     if "mv_params" not in st.session_state:
         return
     with st.spinner("Scanning…"):
@@ -2320,6 +2351,244 @@ def favorites_results(wkey: tuple, favs: list, order: str):
         st.warning("No data for: " + ", ".join(missing) + ". Check the spelling (indexes start with ^).")
 
 
+# ---------- favorites: chart several symbols at once ----------
+FV_MAX = 12
+FV_LAYOUTS = ["One chart (compare)", "Grid of charts"]
+
+
+def to_et(obj):
+    """Coins report intraday times in UTC, stocks in New York time. Put coins on New York time so they line up."""
+    if obj is None or len(obj) == 0:
+        return obj
+    obj = obj.copy()
+    obj.index = obj.index.tz_localize("UTC").tz_convert("America/New_York").tz_localize(None)
+    return obj
+
+
+def fav_compare(cfg: dict, weights: dict):
+    """One chart, every selected symbol rebased to the same starting point."""
+    syms, view = cfg["syms"], cfg["view"]
+    series, sigs, notes, missing = {}, {}, [], []
+    arrows = cfg["arrow_cfg"]
+    intraday = view == "Live" and cfg["lint"] != "1d"
+    exact = False
+    if view == "Live":
+        period, eff, note = live_params(cfg["lint"], cfg["lrng"])
+        if note:
+            notes.append(note)
+        intraday = eff != "1d"
+        exact = intraday and arrows is not None
+        for sym in syms:
+            df = load_intraday(sym, eff, period, cfg["prepost"])
+            if df.empty or len(df) < 2:
+                missing.append(sym)
+                continue
+            fix = to_et if (intraday and is_crypto(sym)) else (lambda x: x)
+            series[sym] = fix(df["Close"])
+            if arrows is not None:
+                try:
+                    sigs[sym] = fix(intraday_signals(sym, eff, df, cfg["prepost"], weights, arrows) if intraday
+                                    else daily_signals(sym, weights, arrows))
+                except Exception:
+                    pass
+    else:
+        dailies = {s: get_daily(s) for s in syms}
+        ok = {s: d for s, d in dailies.items() if not d.empty and len(d) > 2}
+        missing = [s for s in syms if s not in ok]
+        if ok:
+            last = max(d.index[-1] for d in ok.values())
+            first = max(d.index[0] for d in ok.values())     # start where every symbol has data
+            if cfg["rng"] == "Custom":
+                start, end = pd.Timestamp(cfg["from"]), pd.Timestamp(cfg["to"])
+            else:
+                start, end = preset_start(cfg["rng"], last, first), last
+            for s, d in ok.items():
+                v = resample_ohlcv(d, cfg["interval"])["Close"].loc[start:end]
+                if len(v) >= 2:
+                    series[s] = v
+                    if arrows is not None:
+                        try:
+                            sigs[s] = daily_signals(s, weights, arrows)
+                        except Exception:
+                            pass
+                else:
+                    missing.append(s)
+    if not series:
+        st.info("No data came back for those symbols in this range. Try a longer range or a different bar size.")
+        return
+    any_crypto = any(is_crypto(s) for s in series)
+    breaks = "none" if any_crypto else ("us" if intraday else "daily")
+    fig = compare_chart(series, cfg["scale"], breaks, cfg["prepost"], sigs if arrows is not None else None,
+                        intraday=intraday, exact=exact)
+    show_chart(fig)
+    # a small table of how each symbol did over the window shown
+    rows = []
+    for s, v in series.items():
+        rows.append({"Symbol": s, "Start": float(v.iloc[0]), "Latest": float(v.iloc[-1]),
+                     "Change %": (float(v.iloc[-1]) / float(v.iloc[0]) - 1) * 100,
+                     "High": float(v.max()), "Low": float(v.min()),
+                     "Arrows": len(sigs.get(s, [])) if arrows is not None else None})
+    t = pd.DataFrame(rows).sort_values("Change %", ascending=False)
+    cols = {"Start": st.column_config.NumberColumn(format="%.2f"), "Latest": st.column_config.NumberColumn(format="%.2f"),
+            "Change %": st.column_config.NumberColumn(format="%+.2f%%"),
+            "High": st.column_config.NumberColumn(format="%.2f"), "Low": st.column_config.NumberColumn(format="%.2f")}
+    if arrows is None:
+        t = t.drop(columns="Arrows")
+    show_df(t, column_config=cols)
+    msg = f"Updated {now_et()} ET."
+    if any_crypto and intraday:
+        msg += " Coins trade 24/7, so nights and weekends are shown for all symbols; coin times are shown in New York time."
+    if missing:
+        msg += " No data for: " + ", ".join(missing) + "."
+    if arrows is not None:
+        msg += (" Arrows sit on each line where that symbol's technical score moved into Buy or Sell territory "
+                "(hover for details).")
+    st.caption(msg + " " + " ".join(notes))
+
+
+def fav_grid(cfg: dict, weights: dict):
+    """One chart per symbol, with the same candles / overlays / panels / arrows as the Analyze page."""
+    cols_n = 1 if st.session_state.get("compact") else cfg["ncols"]
+    view, arrows = cfg["view"], cfg["arrow_cfg"]
+    syms = cfg["syms"]
+    for i in range(0, len(syms), cols_n):
+        cols = st.columns(cols_n)
+        for col, sym in zip(cols, syms[i:i + cols_n]):
+            with col:
+                try:
+                    q = load_quote(sym)
+                    if q.get("price") and q.get("prev"):
+                        st.markdown(f"**{sym}** &nbsp; {fmt_price(q['price'])} "
+                                    f"<span class='muted'>({q['price'] / q['prev'] - 1:+.2%} today)</span>",
+                                    unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"**{sym}**")
+                    daily = get_daily(sym)
+                    has_vol = (not daily.empty) and float(daily["Volume"].iloc[-60:].sum()) > 0
+                    panels = [p for p in cfg["panels"] if p != "Volume" or has_vol]
+                    if view == "Live":
+                        sig = None
+                        cfg_a = arrows if arrows is not None and cfg["lint"] != "1d" else None
+                        if arrows is not None and cfg["lint"] == "1d":
+                            sig = daily_signals(sym, weights, arrows)
+                        live_chart(sym, cfg["lint"], cfg["lrng"], cfg["prepost"], cfg["ctype"], cfg["overlays"], panels,
+                                   sig, cfg_a, weights, mini=True)
+                    else:
+                        if daily.empty or len(daily) < 30:
+                            st.caption("No data for this symbol.")
+                            continue
+                        first, last = daily.index[0], daily.index[-1]
+                        if cfg["rng"] == "Custom":
+                            start, end = pd.Timestamp(cfg["from"]), pd.Timestamp(cfg["to"])
+                        else:
+                            start, end = preset_start(cfg["rng"], last, first), last
+                        chart_df = add_indicators(resample_ohlcv(daily, cfg["interval"]))
+                        if len(chart_df.loc[start:end]) < 2:
+                            st.caption("Too few bars in this range for this symbol.")
+                            continue
+                        sig = daily_signals(sym, weights, arrows) if arrows is not None else None
+                        fig = price_chart(chart_df, start, end, cfg["ctype"], cfg["overlays"], panels,
+                                          cfg["interval"], signals=sig)
+                        grid_style(fig, sym, len(panels))
+                        show_chart(fig)
+                except Exception as e:
+                    st.caption(f"{sym}: couldn't draw this chart ({e}).")
+    if arrows is not None:
+        st.caption("Arrows mark where each symbol's technical score moved into Buy (green up) or Sell (red down) "
+                   "territory. Open a symbol in Analyze for the full signal. Not financial advice.")
+
+
+def render_fav_charts(weights: dict):
+    ss = st.session_state
+    favs = ss["favorites"]
+    st.markdown("### Chart your favorites")
+    st.caption("See several favorites at once: on one chart to compare how they moved, or in a grid with a chart each. "
+               "Same ranges, bar sizes, indicators and buy/sell arrows as the Analyze page.")
+    # keep the selection valid when favorites change
+    keep = [s for s in ss.get("fv_syms", favs[:4]) if s in favs]
+    ss["fv_syms"] = (keep or favs[:4])[:FV_MAX]
+    syms = st.multiselect(f"Symbols to chart (up to {FV_MAX})", favs, key="fv_syms", max_selections=FV_MAX)
+    if not syms:
+        st.info("Pick at least one symbol above.")
+        return
+
+    m0, m1 = st.columns([3, 3])
+    with m0:
+        ctl("Layout")
+        layout = segmented("Layout", FV_LAYOUTS, FV_LAYOUTS[0], "fv_layout")
+    grid = layout == FV_LAYOUTS[1]
+    with m1:
+        if grid:
+            ctl("Charts per row")
+            ncols = int(segmented("Charts per row", ["1", "2", "3"], "2", "fv_ncols"))
+        else:
+            ctl("Show as")
+            scale = segmented("Show as", ["% change", "Indexed (start = 100)", "Price"], "% change", "fv_scale")
+
+    c0, c1, c2, c3 = st.columns([2, 4, 5, 2])
+    with c0:
+        ctl("View")
+        view = segmented("View", ["Live", "History"], "Live", "fv_view")
+    lrng = lint = rng = interval = None
+    d_from = d_to = None
+    if view == "Live":
+        with c1:
+            ctl("Range")
+            lrng = segmented("Range", list(LIVE_RANGES), "1D", "fv_live_rng")
+        with c2:
+            ctl("Bar size")
+            lint = BAR_LABELS.get(segmented("Bar size", list(BAR_LABELS), "5 min", "fv_live_bar"), "5m")
+    else:
+        with c1:
+            ctl("Date range")
+            rng = segmented("Date range", PRESETS + ["Custom"], "1Y", "fv_rng")
+        with c2:
+            ctl("Interval")
+            interval = segmented("Interval", INTERVALS, "Daily", "fv_interval")
+        if rng == "Custom":
+            d1, d2 = st.columns(2)
+            today = pd.Timestamp.now().normalize()
+            d_from = d1.date_input("From", value=(today - pd.DateOffset(years=1)).date(), key="fv_from")
+            d_to = d2.date_input("To", value=today.date(), key="fv_to")
+            if d_from >= d_to:
+                st.warning("The start date must be before the end date.")
+                return
+    ctype = "Line"
+    if grid:
+        with c3:
+            ctl("Chart")
+            ctype = segmented("Chart", ["Candles", "Line"], "Candles", "fv_ctype")
+
+    o1, o2, o3, o4 = st.columns([4, 4, 2, 2])
+    overlays, panels = [], []
+    if grid:
+        overlays = o1.multiselect("Overlays", ["SMA 9", "SMA 20", "SMA 50", "SMA 200", "Bollinger bands"],
+                                  default=["SMA 9", "SMA 20", "SMA 50"], key="fv_overlays")
+        panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"], default=[], key="fv_panels")
+    prepost = (o3.checkbox("Extended hours", value=False, key="fv_ext")
+               if view == "Live" and not all(is_crypto(s) for s in syms) else False)
+    show_arrows = o4.checkbox("Buy/sell arrows", value=True, key="fv_arrows",
+                              help="Green up arrow: the technical score moved into Buy territory. Red down arrow: Sell.")
+    arrow_cfg = None
+    if show_arrows:
+        sens = o4.selectbox("Arrow sensitivity", list(ARROW_SENS), index=1, key="fv_arrow_sens",
+                            help="More = earlier but noisier arrows. Fewer = only the strongest turns.")
+        arrow_cfg = ARROW_SENS[sens]
+    if not grid:
+        st.caption("Candles, overlays and panels apply to the grid layout. Choose **Grid of charts** to use them.")
+
+    cfg = {"syms": list(syms), "view": view, "lrng": lrng, "lint": lint, "rng": rng, "interval": interval,
+           "from": d_from, "to": d_to, "ctype": ctype, "overlays": overlays, "panels": panels, "prepost": prepost,
+           "arrow_cfg": arrow_cfg}
+    every = None if view == "Live" else 0   # live views refresh with the sidebar setting; history doesn't need to
+    if grid:
+        cfg["ncols"] = ncols
+        refreshing(fav_grid, every=every)(cfg, weights)
+    else:
+        cfg["scale"] = scale
+        refreshing(fav_compare, every=every)(cfg, weights)
+
+
 def render_favorites(weights: dict):
     favs = st.session_state["favorites"]
     st.markdown("Save the symbols you follow and see them all in one live table. Add one from the sidebar while "
@@ -2358,6 +2627,8 @@ def render_favorites(weights: dict):
         col.write("")
     c2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="fav_open")
     c3.button("★ Remove", on_click=remove_favorite, args=(pick,), key="fav_remove")
+
+    render_fav_charts(weights)
 
     with st.expander("Manage / back up your list"):
         tkey = "fav_text_" + hashlib.md5(",".join(favs).encode()).hexdigest()[:8]

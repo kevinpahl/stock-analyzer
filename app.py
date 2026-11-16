@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.6"
+APP_VERSION = "6.7"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
 EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18501, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -882,7 +882,8 @@ def daily_signals(ticker: str, weights: dict, arrow_cfg: tuple):
 
 
 def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
-               overlays: list, panels: list, signals=None, arrow_cfg=None, weights=None, mini: bool = False):
+               overlays: list, panels: list, signals=None, arrow_cfg=None, weights=None, mini: bool = False,
+               tall: bool = False):
     """Intraday chart. Auto-refreshes. With `arrow_cfg` the arrows are computed on the intraday bars themselves.
     `mini` = a compact card for a grid of charts (title on the chart, no long caption)."""
     period, eff, note = live_params(interval, rng)
@@ -916,7 +917,7 @@ def live_chart(ticker: str, interval: str, rng: str, prepost: bool, ctype: str,
                      "(trend, momentum, MACD, Bollinger measured in bars) using only bars up to each point."
                      " Move the Arrow sensitivity setting for more or fewer.")
     if mini:
-        grid_style(fig, ticker, len(panels))
+        grid_style(fig, ticker, len(panels), tall)
         show_chart(fig)
         return
     show_chart(fig)
@@ -954,9 +955,9 @@ def history_view(ticker: str, daily: pd.DataFrame, idx: bool, ctype: str, rng: s
                "The Buy/Hold/Sell signal always uses daily data, whatever interval you chart.")
 
 
-def grid_style(fig, title: str, n_panels: int):
-    """Shorter chart with the symbol as its title, for the favorites grid."""
-    fig.update_layout(height=330 + 90 * n_panels, title=dict(text=f"<b>{title}</b>", x=0.01, y=0.98, font=dict(size=15)),
+def grid_style(fig, title: str, n_panels: int, tall: bool = False):
+    """Chart with the symbol as its title, for the favorites page. `tall` = full Analyze-size (one chart per row)."""
+    fig.update_layout(height=(460 + 150 * n_panels) if tall else (330 + 90 * n_panels), title=dict(text=f"<b>{title}</b>", x=0.01, y=0.98, font=dict(size=15)),
                       margin=dict(l=6, r=6, t=44, b=6))
 
 
@@ -2353,7 +2354,7 @@ def favorites_results(wkey: tuple, favs: list, order: str):
 
 # ---------- favorites: chart several symbols at once ----------
 FV_MAX = 12
-FV_LAYOUTS = ["One chart (compare)", "Grid of charts"]
+FV_LAYOUTS = ["Separate charts", "One chart (compare)"]
 
 
 def to_et(obj):
@@ -2472,7 +2473,7 @@ def fav_grid(cfg: dict, weights: dict):
                         if arrows is not None and cfg["lint"] == "1d":
                             sig = daily_signals(sym, weights, arrows)
                         live_chart(sym, cfg["lint"], cfg["lrng"], cfg["prepost"], cfg["ctype"], cfg["overlays"], panels,
-                                   sig, cfg_a, weights, mini=True)
+                                   sig, cfg_a, weights, mini=True, tall=cols_n == 1)
                     else:
                         if daily.empty or len(daily) < 30:
                             st.caption("No data for this symbol.")
@@ -2489,7 +2490,7 @@ def fav_grid(cfg: dict, weights: dict):
                         sig = daily_signals(sym, weights, arrows) if arrows is not None else None
                         fig = price_chart(chart_df, start, end, cfg["ctype"], cfg["overlays"], panels,
                                           cfg["interval"], signals=sig)
-                        grid_style(fig, sym, len(panels))
+                        grid_style(fig, sym, len(panels), cols_n == 1)
                         show_chart(fig)
                 except Exception as e:
                     st.caption(f"{sym}: couldn't draw this chart ({e}).")
@@ -2502,8 +2503,8 @@ def render_fav_charts(weights: dict):
     ss = st.session_state
     favs = ss["favorites"]
     st.markdown("### Chart your favorites")
-    st.caption("See several favorites at once: on one chart to compare how they moved, or in a grid with a chart each. "
-               "Same ranges, bar sizes, indicators and buy/sell arrows as the Analyze page.")
+    st.caption("Every favorite you pick gets its own chart, just like the Analyze page, with the same ranges, bar sizes, "
+               "indicators and buy/sell arrows. Prefer one chart with all of them on it? Choose **One chart (compare)**.")
     # keep the selection valid when favorites change
     keep = [s for s in ss.get("fv_syms", favs[:4]) if s in favs]
     ss["fv_syms"] = (keep or favs[:4])[:FV_MAX]
@@ -2515,12 +2516,12 @@ def render_fav_charts(weights: dict):
     m0, m1 = st.columns([3, 3])
     with m0:
         ctl("Layout")
-        layout = segmented("Layout", FV_LAYOUTS, FV_LAYOUTS[0], "fv_layout")
-    grid = layout == FV_LAYOUTS[1]
+        layout = segmented("Layout", FV_LAYOUTS, FV_LAYOUTS[0], "fv_layout2")
+    grid = layout == FV_LAYOUTS[0]
     with m1:
         if grid:
             ctl("Charts per row")
-            ncols = int(segmented("Charts per row", ["1", "2", "3"], "2", "fv_ncols"))
+            ncols = int(segmented("Charts per row", ["1", "2", "3"], "1", "fv_ncols2"))
         else:
             ctl("Show as")
             scale = segmented("Show as", ["% change", "Indexed (start = 100)", "Price"], "% change", "fv_scale")
@@ -2564,7 +2565,7 @@ def render_fav_charts(weights: dict):
     if grid:
         overlays = o1.multiselect("Overlays", ["SMA 9", "SMA 20", "SMA 50", "SMA 200", "Bollinger bands"],
                                   default=["SMA 9", "SMA 20", "SMA 50"], key="fv_overlays")
-        panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"], default=[], key="fv_panels")
+        panels = o2.multiselect("Panels", ["Volume", "RSI", "MACD"], default=["Volume", "RSI"], key="fv_panels2")
     prepost = (o3.checkbox("Extended hours", value=False, key="fv_ext")
                if view == "Live" and not all(is_crypto(s) for s in syms) else False)
     show_arrows = o4.checkbox("Buy/sell arrows", value=True, key="fv_arrows",
@@ -2575,7 +2576,7 @@ def render_fav_charts(weights: dict):
                             help="More = earlier but noisier arrows. Fewer = only the strongest turns.")
         arrow_cfg = ARROW_SENS[sens]
     if not grid:
-        st.caption("Candles, overlays and panels apply to the grid layout. Choose **Grid of charts** to use them.")
+        st.caption("Candles, overlays and panels apply when each favorite has its own chart. Choose **Separate charts** to use them.")
 
     cfg = {"syms": list(syms), "view": view, "lrng": lrng, "lint": lint, "rng": rng, "interval": interval,
            "from": d_from, "to": d_to, "ctype": ctype, "overlays": overlays, "panels": panels, "prepost": prepost,

@@ -23,6 +23,22 @@ def _style(fig: go.Figure, height: int, rangebreaks: list | None = None) -> go.F
     return fig
 
 
+def _snap(idx: pd.DatetimeIndex, dt, intraday: bool, exact: bool):
+    """Position of the bar that a signal dated `dt` belongs to (None if it isn't on this chart)."""
+    if exact:        # signals were computed on these very bars: put each one on its own bar
+        pos = int(idx.get_indexer([dt])[0])
+        return pos if pos >= 0 else None
+    if intraday:     # signals are daily: put them on the last bar of that day
+        pos = idx.searchsorted(dt.normalize() + pd.Timedelta(days=1)) - 1
+        if pos < 0 or idx[pos].normalize() != dt.normalize():
+            return None
+        return int(pos)
+    pos = idx.searchsorted(dt)   # daily/weekly/monthly bars: the bar that contains that date
+    if pos >= len(idx) or (pos > 0 and idx[pos] - dt > (idx[pos] - idx[pos - 1])):
+        return None
+    return int(pos)
+
+
 def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool, exact: bool = False):
     """Buy / sell arrows on the price panel, snapped to the bar that contains each signal date."""
     span = float(d["High"].max() - d["Low"].min()) or 1.0
@@ -31,18 +47,9 @@ def _add_arrows(fig, d: pd.DataFrame, signals: pd.DataFrame, intraday: bool, exa
     pts = {"buy": ([], [], []), "sell": ([], [], [])}
     seen = set()
     for dt, r in signals.iterrows():
-        if exact:        # signals were computed on these very bars: put each one on its own bar
-            pos = int(idx.get_indexer([dt])[0])
-            if pos < 0:
-                continue
-        elif intraday:   # signals are daily: put them on the last bar of that day
-            pos = idx.searchsorted(dt.normalize() + pd.Timedelta(days=1)) - 1
-            if pos < 0 or idx[pos].normalize() != dt.normalize():
-                continue
-        else:            # daily/weekly/monthly bars: the bar that contains that date
-            pos = idx.searchsorted(dt)
-            if pos >= len(idx) or (pos > 0 and idx[pos] - dt > (idx[pos] - idx[pos - 1])):
-                continue
+        pos = _snap(idx, dt, intraday, exact)
+        if pos is None:
+            continue
         if (pos, r["side"]) in seen:
             continue
         seen.add((pos, r["side"]))
@@ -268,3 +275,59 @@ def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str, weekend_gaps: b
                                  fillcolor=fill, line=dict(width=0), hoverinfo="skip", name=label))
     fig.add_trace(go.Scatter(x=hist.index, y=hist, name=name, line=dict(color=BLUE, width=2)))
     return _style(fig, 340, [dict(bounds=["sat", "mon"])] if weekend_gaps else None)
+
+
+PALETTE = ["#2563eb", "#f59e0b", "#16a34a", "#dc2626", "#7c3aed", "#0891b2",
+           "#db2777", "#65a30d", "#ea580c", "#475569", "#0d9488", "#a16207"]
+SCALES = ["% change", "Indexed (start = 100)", "Price"]
+
+
+def compare_chart(series: dict, scale: str = "% change", breaks: str = "daily", prepost: bool = False,
+                  signals: dict | None = None, intraday: bool = False, exact: bool = False,
+                  height: int = 500) -> go.Figure:
+    """Several symbols on one chart. `series` maps symbol -> Close series. Every line starts at the same point
+    (0% or 100) so a $20 ETF and a $900 stock can be compared. `signals` maps symbol -> signal_points frame;
+    buy/sell arrows sit on that symbol's line. `breaks`: 'daily' hides weekends, 'us' also hides US nights,
+    'none' hides nothing (use it when 24/7 coins are on the chart)."""
+    fig = go.Figure()
+    pts = {"buy": ([], [], []), "sell": ([], [], [])}
+    for i, (sym, s) in enumerate(series.items()):
+        s = s.dropna()
+        if len(s) < 2:
+            continue
+        base = float(s.iloc[0])
+        if scale == "% change":
+            y, hov = (s / base - 1) * 100, "%{y:+.2f}%"
+        elif scale == "Price":
+            y, hov = s, "%{y:,.2f}"
+        else:
+            y, hov = s / base * 100, "%{y:,.1f}"
+        fig.add_trace(go.Scatter(x=y.index, y=y.values, name=sym, mode="lines",
+                                 line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+                                 hovertemplate=sym + ": " + hov + "<extra></extra>"))
+        sg = (signals or {}).get(sym)
+        if sg is not None and len(sg):
+            for dt, r in sg.iterrows():
+                pos = _snap(y.index, dt, intraday, exact)
+                if pos is None:
+                    continue
+                label = ("STRONG " if r["strong"] else "") + r["side"].upper()
+                when = f"{dt:%b %d, %H:%M}" if exact else f"{dt:%b %d, %Y}"
+                pts[r["side"]][0].append(y.index[pos])
+                pts[r["side"]][1].append(float(y.iloc[pos]))
+                pts[r["side"]][2].append(f"{sym}: {label} signal<br>{when} · score {r['score']:+.2f}")
+    for side, sym_, color, name in (("buy", "triangle-up", UP, "Buy signal"), ("sell", "triangle-down", DOWN, "Sell signal")):
+        xs, ys, tx = pts[side]
+        if xs:
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers", name=name, text=tx, hoverinfo="text",
+                                     marker=dict(symbol=sym_, size=13, color=color,
+                                                 line=dict(color="white", width=1.2))))
+    if scale != "Price":
+        fig.add_hline(y=0 if scale == "% change" else 100, line_dash="dot", line_color="rgba(128,128,128,0.6)")
+    fig.update_yaxes(title_text={"% change": "Change since start (%)", "Price": "Price"}.get(scale, "Indexed (start = 100)"))
+    rb = None
+    if breaks != "none":
+        rb = [dict(bounds=["sat", "mon"])]
+        if breaks == "us" and intraday:
+            rb.append(dict(bounds=[20, 4] if prepost else [16, 9.5], pattern="hour"))
+    return _style(fig, height, rb)

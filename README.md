@@ -18,8 +18,7 @@ Sections (switch at the top of the page):
   volatility, volume waterfall by category such as Layer 1, DeFi, Meme) and a tested daily forecast (UTC close).
 - **Favorites**: save symbols (sidebar ☆ button, or type them) and watch them in one live table. Create an account
   (sidebar) and your favorites are saved to it and come back when you log in.
-- **Favorites** also charts your saved symbols together: one comparison chart (all lines start at the same point) or a grid
-  with a chart per symbol, with the same ranges, bar sizes, candles, indicators and buy/sell arrows as Analyze.
+- **Favorites** also charts your saved symbols together: a separate chart for each symbol (or one comparison chart with all lines starting at the same point), with the same ranges, bar sizes, candles, indicators and buy/sell arrows as Analyze.
 - **Market pulse**: scans ~200 stocks and ETFs, rates the market bullish/bearish (with trend over time), warns on
   volatility, shows where volume is trading (waterfall by business type and index), and breaks results out by business type (energy, AI, semiconductors, ...) with stock-level filters.
 - **Backtest**: replays the technical score on past data vs buy & hold (custom test period, costs, in/out-of-sample).

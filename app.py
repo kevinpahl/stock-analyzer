@@ -11,9 +11,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "7.1"
+APP_VERSION = "6.7"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18815, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18501, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -67,81 +67,42 @@ if _stale:
                ".** Upload the newest copy of each (same name, top level of the repo), commit, then reboot the app. "
                "Until then you may see errors like \"unexpected keyword argument\".")
 
-# Soft Dusk theme: muted blue-grey surfaces, soft sage / coral for up / down. (The base colors also live in
-# .streamlit/config.toml so Streamlit's own widgets match.)
+# Colors are semi-transparent / inherited so the styling works in both light and dark themes.
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-:root { color-scheme: dark; --bg:#1B2129; --surface:#232B35; --surface2:#1F2730; --text:#E4E8EC; --muted:#98A2AE;
-        --border:#323C48; --primary:#7FB2CE; --primary-soft:#2C3C49; --up:#6FBF9C; --down:#E58A82;
-        --shadow:0 1px 2px rgba(0,0,0,.25), 0 8px 22px rgba(0,0,0,.22); }
-.stApp { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; }
-[data-testid="stHeader"] { background: transparent; }
+.stApp { font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; }
 .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1400px; }
 footer { visibility: hidden; }
-h1, h2, h3 { letter-spacing: -0.015em; font-weight: 650; }
-h1 { color: var(--text); }
-a { color: var(--primary); }
-hr { border-color: var(--border); }
-[data-testid="stSidebar"] { background: var(--surface); border-right: 1px solid var(--border); }
-[data-testid="stSidebar"] h3 { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-[data-testid="stMetric"] { background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-                           padding: 14px 18px; box-shadow: var(--shadow); }
-[data-testid="stMetricLabel"] p { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-[data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 650; }
-.muted { color: var(--muted); font-size: .85rem; }
-.ctl { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin: 0 0 4px 2px; }
+h1, h2, h3 { letter-spacing: -0.02em; }
+[data-testid="stMetric"] { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 14px 16px; }
+[data-testid="stMetricLabel"] p { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
+[data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 600; }
+.muted { opacity: .65; font-size: .85rem; }
+.ctl { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin: 0 0 4px 2px; }
 .sym-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
-.sym-title .name { font-size: 1.7rem; font-weight: 650; letter-spacing: -.02em; }
-.sym-title .tick { font-size: 1rem; color: var(--muted); font-weight: 600; }
-.badge { font-size: .68rem; font-weight: 650; letter-spacing: .06em; padding: 3px 10px; border-radius: 999px;
-         background: var(--primary-soft); color: var(--primary); }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px;
-        min-height: 108px; box-shadow: var(--shadow); }
-.card .lbl { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
-.card .big { font-size: 1.25rem; font-weight: 650; margin: 8px 0 6px; }
-.pill { display: inline-block; color: #10202A; font-weight: 700; font-size: 1.05rem; padding: 4px 14px;
+.sym-title .name { font-size: 1.7rem; font-weight: 700; letter-spacing: -.02em; }
+.sym-title .tick { font-size: 1rem; opacity: .6; font-weight: 500; }
+.badge { font-size: .68rem; font-weight: 600; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px;
+         border: 1px solid rgba(128,128,128,.45); opacity: .85; }
+.card { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 14px 16px; min-height: 108px; }
+.card .lbl { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
+.card .big { font-size: 1.25rem; font-weight: 700; margin: 8px 0 6px; }
+.pill { display: inline-block; color: #fff; font-weight: 700; font-size: 1.05rem; padding: 4px 14px;
         border-radius: 999px; margin: 6px 0 12px; letter-spacing: .02em; }
 .gauge { position: relative; height: 8px; border-radius: 999px; margin: 2px 0 4px;
-         background: linear-gradient(90deg, #E58A82 0%, #E9B866 50%, #6FBF9C 100%); }
+         background: linear-gradient(90deg, #dc2626 0%, #f59e0b 50%, #16a34a 100%); }
 .gauge .dot { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%;
-              background: #E4E8EC; border: 3px solid #1B2129; transform: translate(-50%, -50%); }
-.gauge-labels { display: flex; justify-content: space-between; font-size: .68rem; color: var(--muted); }
-.tape { overflow: hidden; white-space: nowrap; background: var(--surface); border: 1px solid var(--border);
-        border-radius: 12px; padding: 9px 0; box-shadow: var(--shadow); }
+              background: #fff; border: 3px solid #111827; transform: translate(-50%, -50%); }
+.gauge-labels { display: flex; justify-content: space-between; font-size: .68rem; opacity: .55; }
+.tape { overflow: hidden; white-space: nowrap; border: 1px solid rgba(128,128,128,.22); border-radius: 10px;
+        padding: 9px 0; }
 .tape-track { display: inline-block; animation: tape-scroll 60s linear infinite; }
 .tape:hover .tape-track { animation-play-state: paused; }
 .tk { margin: 0 22px; font-size: .92rem; }
-.tk .up { color: var(--up); font-weight: 600; }
-.tk .dn { color: var(--down); font-weight: 600; }
+.tk .up { color: #16a34a; font-weight: 600; }
+.tk .dn { color: #dc2626; font-weight: 600; }
 @keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-
-/* controls */
-[data-testid="stSegmentedControl"] { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-                                     padding: 3px; width: fit-content; max-width: 100%; }
-[data-testid="stSegmentedControl"] button, button[data-testid^="stBaseButton-segmented_control"] {
-  border: 0 !important; border-radius: 9px !important; background: transparent !important;
-  color: var(--muted) !important; font-weight: 550; }
-[data-testid="stBaseButton-segmented_controlActive"], [data-testid="stSegmentedControl"] button[aria-checked="true"],
-[data-testid="stSegmentedControl"] button[aria-pressed="true"] {
-  background: var(--primary-soft) !important; color: var(--primary) !important; font-weight: 650; }
-.st-key-section [data-testid="stSegmentedControl"] { box-shadow: var(--shadow); border-radius: 14px; padding: 4px; }
-.st-key-section [data-testid="stBaseButton-segmented_controlActive"],
-.st-key-section [data-testid="stSegmentedControl"] button[aria-checked="true"],
-.st-key-section [data-testid="stSegmentedControl"] button[aria-pressed="true"] {
-  background: var(--primary) !important; color: #14202A !important; box-shadow: 0 2px 8px rgba(127,178,206,.3); }
-.stButton > button, [data-testid="stFormSubmitButton"] > button, [data-testid="stDownloadButton"] button {
-  background: var(--surface2); color: var(--primary); border: 1px solid var(--border); border-radius: 10px; font-weight: 600; }
-.stButton > button:hover, [data-testid="stFormSubmitButton"] > button:hover { border-color: var(--primary); color: var(--text); }
-[data-testid="stBaseButton-primary"] { background: var(--primary) !important; color: #14202A !important; border: 0 !important; }
-[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="textarea"] {
-  background: var(--surface2) !important; border-color: var(--border) !important; border-radius: 10px !important; }
-[data-testid="stExpander"] { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
-[data-testid="stAlert"] { border-radius: 12px; border: 0; }
-[data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-[data-testid="stPlotlyChart"] { background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
-                                padding: 6px 6px 2px; box-shadow: var(--shadow); }
-[data-testid="stCaptionContainer"] { color: var(--muted); }
 
 /* ---- tablets and small screens ---- */
 @media (max-width: 1100px) {
@@ -170,47 +131,8 @@ hr { border-color: var(--border); }
 </style>
 """, unsafe_allow_html=True)
 
-# If .streamlit/config.toml (with the dark base theme) isn't in the repo, Streamlit's own widgets stay light and the
-# text on them turns invisible. This extra CSS repaints them so the page still looks right; the config file is the
-# cleaner fix and makes this block unnecessary.
-try:
-    _base_dark = st.get_option("theme.base") == "dark"
-except Exception:
-    _base_dark = False
-if not _base_dark:
-    st.markdown("""
-<style>
-[data-testid="stAppViewContainer"], [data-testid="stMain"], .stApp { background: #1B2129 !important; }
-[data-testid="stSidebar"], [data-testid="stSidebar"] > div { background: #232B35 !important; }
-h1, h2, h3, h4, [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li, [data-testid="stMetricValue"], [data-testid="stMetricValue"] div,
-[data-testid="stExpander"] summary, [data-testid="stExpander"] summary p, [data-testid="stCheckbox"] p,
-[data-testid="stToggle"] p, [data-testid="stRadio"] p { color: #E4E8EC !important; }
-[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label, [data-testid="stMetricLabel"] p,
-[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p, .stApp small { color: #98A2AE !important; }
-[data-baseweb="input"] input, [data-baseweb="textarea"] textarea, [data-baseweb="select"] div,
-[data-baseweb="select"] span, [data-baseweb="select"] input { color: #E4E8EC !important;
-  -webkit-text-fill-color: #E4E8EC !important; }
-[data-baseweb="input"] input::placeholder, [data-baseweb="textarea"] textarea::placeholder { color: #6F7A86 !important; }
-[data-baseweb="select"] svg, [data-baseweb="input"] svg { fill: #98A2AE !important; }
-[data-baseweb="popover"] > div, [data-baseweb="popover"] ul, [data-baseweb="menu"] {
-  background: #232B35 !important; color: #E4E8EC !important; }
-[data-baseweb="popover"] li, [data-baseweb="menu"] li { color: #E4E8EC !important; background: transparent !important; }
-[data-baseweb="popover"] li:hover, [data-baseweb="menu"] li:hover { background: #2C3C49 !important; }
-[data-baseweb="tag"] { background: #2C3C49 !important; color: #7FB2CE !important; }
-[data-baseweb="tag"] span { color: #7FB2CE !important; }
-[data-testid="stAlert"] { background: #232B35 !important; }
-[data-testid="stAlert"] p, [data-testid="stAlert"] div { color: #E4E8EC !important; }
-[data-testid="stDataFrame"] { filter: invert(.9) hue-rotate(180deg); }
-[data-baseweb="slider"] [role="slider"] { background: #7FB2CE !important; }
-[data-baseweb="checkbox"] [data-checked="true"], [data-baseweb="checkbox"] input:checked + div { background: #7FB2CE !important; }
-.stButton > button p, [data-testid="stFormSubmitButton"] > button p { color: #7FB2CE !important; }
-[data-testid="stBaseButton-primary"] p { color: #14202A !important; }
-</style>
-""", unsafe_allow_html=True)
-
-VERDICT_COLORS = {"STRONG BUY": "#4E9F82", "BUY": "#6FBF9C", "HOLD": "#D4AE5F",
-                  "SELL": "#E58A82", "STRONG SELL": "#C25F58"}
+VERDICT_COLORS = {"STRONG BUY": "#0a7d33", "BUY": "#16a34a", "HOLD": "#b8860b",
+                  "SELL": "#dc2626", "STRONG SELL": "#991b1b"}
 LIVE_TTL = 20  # seconds: how long short-lived market data is reused before asking Yahoo again
 REFRESH_OPTIONS = {"Off": 0, "10 sec": 10, "30 sec": 30, "60 sec": 60}
 SECTIONS = ["Analyze", "Trading", "Forecast", "Crypto", "Favorites", "Market pulse", "Backtest", "Top movers"]
@@ -586,7 +508,7 @@ def queue_cookie(token: str | None):
 
 # A small note at the bottom-left of the page so you can see whether the browser accepted the saved login.
 TOAST_JS = """function toast(m){var o=d.getElementById('sa_toast');if(o)o.remove();var e=d.createElement('div');e.id='sa_toast';
-e.style.cssText='position:fixed;left:12px;bottom:12px;z-index:99999;background:#1B2129;color:#fff;padding:8px 12px;border-radius:8px;font:13px sans-serif;max-width:80%';
+e.style.cssText='position:fixed;left:12px;bottom:12px;z-index:99999;background:#0f172a;color:#fff;padding:8px 12px;border-radius:8px;font:13px sans-serif;max-width:80%';
 e.textContent=m;d.body.appendChild(e);setTimeout(function(){e.remove()},12000);}"""
 
 
@@ -816,14 +738,14 @@ def install_as_app():
     js = """var h=d.head;
 function add(t,a){var e=d.createElement(t);for(var k in a)e.setAttribute(k,a[k]);h.appendChild(e);}
 var m={name:'Stock Analyzer',short_name:'Stocks',start_url:window.parent.location.origin+'/',display:'standalone',
-background_color:'#1B2129',theme_color:'#1B2129',icons:[{src:'ICON192',sizes:'192x192',type:'image/png'}]};
+background_color:'#0f172a',theme_color:'#0f172a',icons:[{src:'ICON192',sizes:'192x192',type:'image/png'}]};
 add('link',{rel:'manifest',href:URL.createObjectURL(new Blob([JSON.stringify(m)],{type:'application/manifest+json'}))});
 add('link',{rel:'apple-touch-icon',href:'ICON180'});
 add('meta',{name:'apple-mobile-web-app-capable',content:'yes'});
 add('meta',{name:'mobile-web-app-capable',content:'yes'});
 add('meta',{name:'apple-mobile-web-app-title',content:'Stocks'});
 add('meta',{name:'apple-mobile-web-app-status-bar-style',content:'default'});
-add('meta',{name:'theme-color',content:'#1B2129'});
+add('meta',{name:'theme-color',content:'#0f172a'});
 """.replace("ICON192", ICON_192).replace("ICON180", ICON_180)
     run_js(js)
 
@@ -914,7 +836,7 @@ def live_kpis(ticker: str, weights: dict):
     crypto = is_crypto(ticker)
     age = q.get("age_min")
     live = crypto or (age is not None and age < 20)
-    status = ("<span style='color:#6FBF9C'>● LIVE</span>" if live
+    status = ("<span style='color:#16a34a'>● LIVE</span>" if live
               else "<span style='opacity:.75'>● Market closed</span>")
     if crypto:
         status += "<span class='muted'> · trades 24/7</span>"
@@ -1338,9 +1260,9 @@ def render_movers(weights: dict):
 
 
 # ======================= MARKET PULSE =======================
-REGIME_COLORS = {"STRONGLY BULLISH": "#4E9F82", "BULLISH": "#6FBF9C", "NEUTRAL / MIXED": "#D4AE5F",
-                 "BEARISH": "#E58A82", "STRONGLY BEARISH": "#C25F58"}
-VOL_COLORS = {"LOW": "#6FBF9C", "NORMAL": "#7FB2CE", "ELEVATED": "#E0A458", "HIGH": "#E58A82", "EXTREME": "#C25F58"}
+REGIME_COLORS = {"STRONGLY BULLISH": "#0a7d33", "BULLISH": "#16a34a", "NEUTRAL / MIXED": "#b8860b",
+                 "BEARISH": "#dc2626", "STRONGLY BEARISH": "#991b1b"}
+VOL_COLORS = {"LOW": "#16a34a", "NORMAL": "#2563eb", "ELEVATED": "#d97706", "HIGH": "#dc2626", "EXTREME": "#991b1b"}
 PULSE_REFRESH = {"Off": 0, "1 min": 60, "5 min": 300}
 PULSE_SORTS = {"Trend rating": ("Rating", False), "Biggest 1D gain": ("1d %", False),
                "Biggest 1D loss": ("1d %", True), "Unusual volume": ("Rel. volume", False),
@@ -1577,7 +1499,7 @@ TAPE_STOCKS = "AAPL MSFT NVDA AMZN GOOGL META TSLA AVGO JPM NFLX AMD V UNH XOM".
 ASIA_SYMS = [m["sym"] for m in ASIA]
 TAPE_LABELS = {**US_BOARD, "ES=F": "S&P fut", "NQ=F": "Nasdaq fut", "YM=F": "Dow fut", "RTY=F": "Russell fut",
                **{m["sym"]: m["name"] for m in ASIA}}
-LEAN_COLORS = {"LEANING HIGHER": "#6FBF9C", "LEANING LOWER": "#E58A82", "MIXED": "#D4AE5F"}
+LEAN_COLORS = {"LEANING HIGHER": "#16a34a", "LEANING LOWER": "#dc2626", "MIXED": "#b8860b"}
 STATUS_ICON = {"Open": "🟢 Open", "Lunch break": "🟡 Lunch break", "Pre-open": "🟡 Pre-open", "Closed": "⚪ Closed"}
 
 
@@ -1752,8 +1674,8 @@ def trading_asia(favs: tuple):
 
     st.markdown("#### When each market is open (US Eastern time)")
     now_et_ts = now.tz_convert("America/New_York").tz_localize(None)
-    colors = {m["name"]: ("#6FBF9C" if status[m["name"]] == "Open" else "#98A2AE") for m in ASIA}
-    colors[US["name"]] = "#7FB2CE"
+    colors = {m["name"]: ("#16a34a" if status[m["name"]] == "Open" else "#94a3b8") for m in ASIA}
+    colors[US["name"]] = "#2563eb"
     iv = timeline_intervals(ASIA + [US], now)
     if iv:
         show_chart(session_timeline(iv, now_et_ts, colors))

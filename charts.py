@@ -6,14 +6,17 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-UP, DOWN, BLUE, GRAY = "#16a34a", "#dc2626", "#2563eb", "#94a3b8"
-GRID = "rgba(128,128,128,0.16)"
-MA = {"SMA 9": ("SMA9", "#f59e0b"), "SMA 20": ("SMA20", "#2563eb"),
-      "SMA 50": ("SMA50", "#7c3aed"), "SMA 200": ("SMA200", "#64748b")}
+UP, DOWN, BLUE, GRAY = "#6FBF9C", "#E58A82", "#7FB2CE", "#98A2AE"
+GRID = "rgba(152,162,174,0.16)"
+MA = {"SMA 9": ("SMA9", "#E9B866"), "SMA 20": ("SMA20", "#7FB2CE"),
+      "SMA 50": ("SMA50", "#B3A0D8"), "SMA 200": ("SMA200", "#8C97A6")}
 
 
 def _style(fig: go.Figure, height: int, rangebreaks: list | None = None) -> go.Figure:
     fig.update_layout(height=height, margin=dict(l=8, r=8, t=30, b=8), hovermode="x unified",
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color="#98A2AE", family="Inter, Segoe UI, system-ui, sans-serif", size=12),
+                      hoverlabel=dict(bgcolor="#2C3540", bordercolor="#3B4654", font=dict(color="#E4E8EC")),
                       legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
                       xaxis_rangeslider_visible=False, bargap=0.15)
     fig.update_xaxes(showgrid=False, showline=True, linecolor=GRID)
@@ -95,10 +98,10 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
                 fig.add_trace(go.Scatter(x=d.index, y=d[col], name=name,
                                          line=dict(color=color, width=1.4)), row=1, col=1)
         elif name == "Bollinger bands":
-            edge = dict(color="rgba(100,116,139,0.6)", width=1, dash="dot")
+            edge = dict(color="rgba(152,162,174,0.6)", width=1, dash="dot")
             fig.add_trace(go.Scatter(x=d.index, y=d["BB_high"], name="Upper band", line=edge), row=1, col=1)
             fig.add_trace(go.Scatter(x=d.index, y=d["BB_low"], name="Lower band", line=edge,
-                                     fill="tonexty", fillcolor="rgba(100,116,139,0.08)"), row=1, col=1)
+                                     fill="tonexty", fillcolor="rgba(152,162,174,0.08)"), row=1, col=1)
 
     r = 2
     for p in panels:
@@ -109,7 +112,7 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
             fig.update_yaxes(title_text="Volume", row=r, col=1)
         elif p == "RSI":
             fig.add_trace(go.Scatter(x=d.index, y=d["RSI"], name="RSI",
-                                     line=dict(color="#0d9488", width=1.5)), row=r, col=1)
+                                     line=dict(color="#6BBFB3", width=1.5)), row=r, col=1)
             for lvl in (30, 70):
                 fig.add_hline(y=lvl, line_dash="dot", line_color="rgba(128,128,128,0.6)", row=r, col=1)
             fig.update_yaxes(range=[0, 100], title_text="RSI", row=r, col=1)
@@ -120,7 +123,7 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
             fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD",
                                      line=dict(color=BLUE, width=1.3)), row=r, col=1)
             fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal",
-                                     line=dict(color="#f59e0b", width=1.3)), row=r, col=1)
+                                     line=dict(color="#E9B866", width=1.3)), row=r, col=1)
             fig.update_yaxes(title_text="MACD", row=r, col=1)
         r += 1
     if signals is not None and len(signals) and len(d):
@@ -138,11 +141,11 @@ def price_chart(df: pd.DataFrame, start, end, chart_type: str, overlays: list[st
 
 def equity_chart(eq: pd.DataFrame) -> go.Figure:
     dd = eq / eq.cummax() - 1
-    colors = {"Strategy": (BLUE, "rgba(37,99,235,0.15)"), "Buy & hold": (GRAY, "rgba(148,163,184,0.15)")}
+    colors = {"Strategy": (BLUE, "rgba(127,178,206,0.15)"), "Buy & hold": (GRAY, "rgba(152,162,174,0.15)")}
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.68, 0.32], vertical_spacing=0.06,
                         subplot_titles=("Growth of $1", "Drawdown"))
     for c in eq.columns:
-        line, fill = colors.get(c, (BLUE, "rgba(37,99,235,0.15)"))
+        line, fill = colors.get(c, (BLUE, "rgba(127,178,206,0.15)"))
         fig.add_trace(go.Scatter(x=eq.index, y=eq[c], name=c, line=dict(color=line, width=2)), row=1, col=1)
         fig.add_trace(go.Scatter(x=dd.index, y=dd[c], name=f"{c} drawdown", showlegend=False,
                                  line=dict(color=line, width=1), fill="tozeroy", fillcolor=fill), row=2, col=1)
@@ -164,9 +167,9 @@ def trades_chart(close: pd.Series, trades: pd.DataFrame) -> go.Figure:
 def regime_chart(hist: pd.Series) -> go.Figure:
     """Market rating (0 = strongly bearish, 100 = strongly bullish) over time, with shaded zones."""
     fig = go.Figure()
-    for lo, hi, col in [(0, 20, "rgba(153,27,27,0.14)"), (20, 40, "rgba(220,38,38,0.08)"),
-                        (40, 60, "rgba(245,158,11,0.08)"), (60, 80, "rgba(22,163,74,0.08)"),
-                        (80, 100, "rgba(10,125,51,0.14)")]:
+    for lo, hi, col in [(0, 20, "rgba(194,95,88,0.14)"), (20, 40, "rgba(229,138,130,0.08)"),
+                        (40, 60, "rgba(233,184,102,0.08)"), (60, 80, "rgba(111,191,156,0.08)"),
+                        (80, 100, "rgba(78,159,130,0.14)")]:
         fig.add_hrect(y0=lo, y1=hi, fillcolor=col, line_width=0)
     fig.add_trace(go.Scatter(x=hist.index, y=hist, mode="lines", name="Market rating",
                              line=dict(color=BLUE, width=2.5)))
@@ -190,7 +193,7 @@ def intraday_chart(df: pd.DataFrame, prev_close: float | None = None, name: str 
     if float(df["Volume"].sum()) > 0:
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
         vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
-        fig.add_trace(go.Scatter(x=df.index, y=vwap, name="VWAP", line=dict(color="#f59e0b", width=1.3, dash="dot")))
+        fig.add_trace(go.Scatter(x=df.index, y=vwap, name="VWAP", line=dict(color="#E9B866", width=1.3, dash="dot")))
     if prev_close:
         fig.add_hline(y=prev_close, line_dash="dash", line_color="rgba(128,128,128,0.6)",
                       annotation_text="Prev close", annotation_position="top left")
@@ -230,7 +233,7 @@ def volume_waterfall(df: pd.DataFrame, measure: str = "dollars", mode: str = "to
     fig = go.Figure(go.Waterfall(
         x=x, y=[v / scale for v in y], measure=kinds, text=text, textposition="outside",
         connector=dict(line=dict(color=GRID)), increasing=dict(marker=dict(color=inc)),
-        decreasing=dict(marker=dict(color=dec)), totals=dict(marker=dict(color="#475569")), cliponaxis=False))
+        decreasing=dict(marker=dict(color=dec)), totals=dict(marker=dict(color="#7A8696")), cliponaxis=False))
     fig.update_xaxes(tickangle=-40)
     fig.update_yaxes(title_text=unit)
     fig.update_layout(showlegend=False)
@@ -244,7 +247,7 @@ def session_timeline(intervals: list[dict], now, colors: dict) -> go.Figure:
     for it in intervals:
         fig.add_trace(go.Bar(
             x=[(it["end"] - it["start"]).total_seconds() * 1000], y=[it["name"]], base=[it["start"]],
-            orientation="h", marker_color=colors.get(it["name"], "#94a3b8"), showlegend=False,
+            orientation="h", marker_color=colors.get(it["name"], "#98A2AE"), showlegend=False,
             hovertemplate=f"{it['name']}<br>{it['start']:%a %H:%M} to {it['end']:%H:%M} ET<extra></extra>"))
     fig.add_shape(type="line", x0=now, x1=now, y0=0, y1=1, yref="paper", line=dict(color=DOWN, width=2, dash="dash"))
     fig.update_xaxes(type="date", range=[now - pd.Timedelta(hours=10), now + pd.Timedelta(hours=14)],
@@ -269,16 +272,16 @@ def fan_chart(hist: pd.Series, cone_df: pd.DataFrame, name: str, weekend_gaps: b
     """Recent closes plus a widening 50% / 90% range for the coming sessions (no drift assumed)."""
     fig = go.Figure()
     x = list(cone_df.index)
-    for lo, hi, fill, label in (("lo90", "hi90", "rgba(37,99,235,0.10)", "90% range"),
-                                ("lo50", "hi50", "rgba(37,99,235,0.22)", "50% range")):
+    for lo, hi, fill, label in (("lo90", "hi90", "rgba(127,178,206,0.10)", "90% range"),
+                                ("lo50", "hi50", "rgba(127,178,206,0.22)", "50% range")):
         fig.add_trace(go.Scatter(x=x + x[::-1], y=list(cone_df[hi]) + list(cone_df[lo])[::-1], fill="toself",
                                  fillcolor=fill, line=dict(width=0), hoverinfo="skip", name=label))
     fig.add_trace(go.Scatter(x=hist.index, y=hist, name=name, line=dict(color=BLUE, width=2)))
     return _style(fig, 340, [dict(bounds=["sat", "mon"])] if weekend_gaps else None)
 
 
-PALETTE = ["#2563eb", "#f59e0b", "#16a34a", "#dc2626", "#7c3aed", "#0891b2",
-           "#db2777", "#65a30d", "#ea580c", "#475569", "#0d9488", "#a16207"]
+PALETTE = ["#7FB2CE", "#E9B866", "#6FBF9C", "#E58A82", "#B3A0D8", "#6CC3D5",
+           "#D98BB0", "#9BC66B", "#E39A6A", "#7A8696", "#6BBFB3", "#C9A95A"]
 SCALES = ["% change", "Indexed (start = 100)", "Price"]
 
 

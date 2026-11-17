@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "7.0"
+APP_VERSION = "7.1"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
 EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18815, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
@@ -167,6 +167,45 @@ hr { border-color: var(--border); }
   [data-baseweb="tab"] { min-height: 2.75rem; }
   [data-testid="stSegmentedControl"] button { min-height: 2.5rem; }
 }
+</style>
+""", unsafe_allow_html=True)
+
+# If .streamlit/config.toml (with the dark base theme) isn't in the repo, Streamlit's own widgets stay light and the
+# text on them turns invisible. This extra CSS repaints them so the page still looks right; the config file is the
+# cleaner fix and makes this block unnecessary.
+try:
+    _base_dark = st.get_option("theme.base") == "dark"
+except Exception:
+    _base_dark = False
+if not _base_dark:
+    st.markdown("""
+<style>
+[data-testid="stAppViewContainer"], [data-testid="stMain"], .stApp { background: #1B2129 !important; }
+[data-testid="stSidebar"], [data-testid="stSidebar"] > div { background: #232B35 !important; }
+h1, h2, h3, h4, [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li, [data-testid="stMetricValue"], [data-testid="stMetricValue"] div,
+[data-testid="stExpander"] summary, [data-testid="stExpander"] summary p, [data-testid="stCheckbox"] p,
+[data-testid="stToggle"] p, [data-testid="stRadio"] p { color: #E4E8EC !important; }
+[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label, [data-testid="stMetricLabel"] p,
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p, .stApp small { color: #98A2AE !important; }
+[data-baseweb="input"] input, [data-baseweb="textarea"] textarea, [data-baseweb="select"] div,
+[data-baseweb="select"] span, [data-baseweb="select"] input { color: #E4E8EC !important;
+  -webkit-text-fill-color: #E4E8EC !important; }
+[data-baseweb="input"] input::placeholder, [data-baseweb="textarea"] textarea::placeholder { color: #6F7A86 !important; }
+[data-baseweb="select"] svg, [data-baseweb="input"] svg { fill: #98A2AE !important; }
+[data-baseweb="popover"] > div, [data-baseweb="popover"] ul, [data-baseweb="menu"] {
+  background: #232B35 !important; color: #E4E8EC !important; }
+[data-baseweb="popover"] li, [data-baseweb="menu"] li { color: #E4E8EC !important; background: transparent !important; }
+[data-baseweb="popover"] li:hover, [data-baseweb="menu"] li:hover { background: #2C3C49 !important; }
+[data-baseweb="tag"] { background: #2C3C49 !important; color: #7FB2CE !important; }
+[data-baseweb="tag"] span { color: #7FB2CE !important; }
+[data-testid="stAlert"] { background: #232B35 !important; }
+[data-testid="stAlert"] p, [data-testid="stAlert"] div { color: #E4E8EC !important; }
+[data-testid="stDataFrame"] { filter: invert(.9) hue-rotate(180deg); }
+[data-baseweb="slider"] [role="slider"] { background: #7FB2CE !important; }
+[data-baseweb="checkbox"] [data-checked="true"], [data-baseweb="checkbox"] input:checked + div { background: #7FB2CE !important; }
+.stButton > button p, [data-testid="stFormSubmitButton"] > button p { color: #7FB2CE !important; }
+[data-testid="stBaseButton-primary"] p { color: #14202A !important; }
 </style>
 """, unsafe_allow_html=True)
 

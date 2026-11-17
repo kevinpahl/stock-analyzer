@@ -3,6 +3,9 @@
     pip install -r requirements.txt
     streamlit run app.py
 
+Look: the "Soft Dusk" theme (muted blue-grey surfaces, soft sage and coral for up and down). Its base colors are in
+`.streamlit/config.toml`, its styling in the CSS block near the top of `app.py`, chart colors in `charts.py`.
+
 Sections (switch at the top of the page):
 - **Analyze**: live price, day range and Buy/Hold/Sell signal that auto-refresh (sidebar: Off / 10 / 30 / 60 sec).
   Chart view **Live** = bars from 1 min to 1 day over ranges 1D, 5D, 1M, 2M, 3M, 6M or 1Y (optional extended hours);

@@ -11,9 +11,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-APP_VERSION = "6.7"
+APP_VERSION = "6.8"
 # Sizes of the other files in this release. Only used to explain a startup problem if an old copy was uploaded.
-EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18501, "screener.py": 8367, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905}
+EXPECTED_SIZES = {"analyzer.py": 14007, "backtest.py": 5320, "charts.py": 18501, "screener.py": 8873, "utils.py": 4601, "market.py": 20549, "accounts.py": 10648, "forecast.py": 10898, "sessions.py": 4028, "crypto.py": 12905, "breakout.py": 30022}
 st.set_page_config(page_title="Stock Analyzer", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -28,7 +28,8 @@ try:
     from crypto import (CATEGORIES, CATEGORY_OF, COINS, CRYPTO_REGIME_WEIGHTS, NAME_OF, TOP_COINS, compute_crypto_pulse,
                         crypto_symbols)
     from market import GROUPS, GROUP_OF, REGIME_WEIGHTS, all_symbols, compute_pulse, flags, session_fraction, signal_label, symbol_stats
-    from screener import ASSET_TYPES, MOVER_MODES, UNIVERSES, download_history, get_universe, rank_movers
+    from breakout import CAT_WEIGHTS, fetch_many, scan as breakout_scan, setup_history
+    from screener import ASSET_TYPES, MOVER_MODES, UNIVERSES, asset_type, download_history, get_universe, rank_movers
     from utils import (BAR_LABELS, LIVE_RANGES, ETF_FOR, INDEX_NAMES, INTERVALS, OVERVIEW, PRESETS, QUICK_PICKS, benchmark_for,
                        is_crypto, is_index, live_days, live_params, preset_start, resample_ohlcv, strip_tz)
 except ImportError as e:
@@ -310,6 +311,32 @@ def cached_universe(label: str, custom: str):
     return get_universe(label, custom)
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_breakout_data(tickers: tuple):
+    return download_history(list(tickers), "2y")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def run_breakout(uni: str, custom: str, types: tuple, min_price: float, min_vol: float, research_n: int):
+    """The whole Breakout watch scan. Cached 15 minutes so clicking around the results doesn't re-fetch news."""
+    syms, note = get_universe(uni, custom)
+    if not syms:
+        return pd.DataFrame(), {}, {}, note
+    data = load_breakout_data(tuple(syms))
+    bdf = get_daily("SPY")
+    bench = bdf["Close"] if not bdf.empty else None
+    table, details, stats = breakout_scan(data, bench, list(types), min_price, min_vol, research_n, fetch_many)
+    return table, details, stats, note
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def run_setup_history(uni: str, custom: str, types: tuple):
+    syms, _ = get_universe(uni, custom)
+    data = {s: d for s, d in load_breakout_data(tuple(syms)).items() if asset_type(s) in types}
+    bdf = get_daily("SPY")
+    return setup_history(data, bdf["Close"] if not bdf.empty else None)
+
+
 @st.cache_data(ttl=60, show_spinner="Scanning about 200 stocks and ETFs (the first scan can take up to a minute)…")
 def load_pulse(weights_key: tuple):
     return compute_pulse(download_history(all_symbols(), "2y"), dict(weights_key))
@@ -325,7 +352,7 @@ def load_favorites(symbols: tuple, weights_key: tuple):
 
 def refresh_now():
     for fn in (load_recent_daily, load_intraday, load_quote, load_overview, load_universe_data, cached_universe,
-               load_pulse, load_favorites, load_board, load_intraday_et, load_asia_hist, forecast_index,
+               load_breakout_data, run_breakout, run_setup_history, load_pulse, load_favorites, load_board, load_intraday_et, load_asia_hist, forecast_index,
                load_crypto_board, load_crypto_pulse, forecast_coin, forecast_symbol):
         getattr(fn, "clear", lambda: None)()
 
@@ -1214,7 +1241,154 @@ def movers_results(weights: dict):
     })
 
 
+BO_COLORS = {"Strong candidate": "#16a34a", "Watch": "#b8860b", "Weak": "#6b7280"}
+BO_UNIVERSES = [k for k, v in UNIVERSES.items() if v not in ("day_losers", "indexes", "etf_leveraged")]
+
+
+def render_breakout():
+    st.markdown(
+        "Looks for names that are **set up to run before they run**. Step 1 scores every symbol's chart for the "
+        "pattern that often comes before a big move: a volatility squeeze near the 52-week high, in an uptrend, "
+        "beating the market, with steady buying. Step 2 digs into the best ones: **news tone, earnings track "
+        "record, analyst upgrades and price targets, insider buying and short interest**.")
+    u1, u2 = st.columns([3, 2])
+    uni = u1.selectbox("Where to look", ["My favorites"] + BO_UNIVERSES, index=1 + BO_UNIVERSES.index(
+        "Large-cap watchlist (built-in)"), key="bo_uni",
+        help="Yahoo's growth, small-cap and most-shorted lists are good hunting grounds for early movers.")
+    n_res = u2.slider("Names to research in depth", 10, 40, 25, 5, key="bo_n",
+                      help="News, earnings, analyst and insider lookups are slow, so only the best-looking charts "
+                           "get them. More names = a longer scan.")
+    custom = ""
+    if uni == "My favorites":
+        custom = ",".join(st.session_state.get("favorites", []))
+        if not custom:
+            st.info("Your favorites list is empty. Add some on the Favorites section, or pick another list.")
+    elif UNIVERSES[uni] == "custom":
+        custom = st.text_input("Tickers (comma-separated)", "AAPL, NVDA, TSLA, AMD, PLTR", key="bo_custom")
+    types = st.multiselect("Include", ["Stock", "ETF", "Crypto"], default=["Stock", "ETF", "Crypto"], key="bo_types",
+                           help="Indexes, futures and currencies have no earnings or insiders, so they're left out. "
+                                "ETFs and coins get the chart and news signals only.")
+    f1, f2, f3 = st.columns(3)
+    min_price = f1.number_input("Min price ($)", 0.0, 1000.0, 5.0, 1.0, key="bo_price",
+                                help="Stocks and ETFs only. Avoids penny stocks.")
+    min_vol = f2.number_input("Min avg daily volume", 0, 50_000_000, 500_000, 100_000, key="bo_vol",
+                              help="Stocks and ETFs only. Thin stocks are easy to push around.")
+    min_score = f3.slider("Only show scores above", 0, 90, 50, 5, key="bo_min")
+
+    if st.button("Find breakout candidates", type="primary", key="bo_run"):
+        st.session_state["bo_params"] = {
+            "uni": "Custom list" if uni == "My favorites" else uni, "custom": custom,
+            "types": tuple(types or ["Stock", "ETF", "Crypto"]), "min_price": float(min_price),
+            "min_vol": float(min_vol), "n": int(n_res)}
+    p = st.session_state.get("bo_params")
+    if not p:
+        st.caption("Press the button to scan. A first scan takes a minute or two because it reads news and earnings "
+                   "for each short-listed name.")
+        return
+    with st.spinner("Scoring charts, then reading news, earnings, analyst and insider data for the best ones…"):
+        try:
+            table, details, stats, note = run_breakout(p["uni"], p["custom"], p["types"], p["min_price"],
+                                                       p["min_vol"], p["n"])
+        except Exception as e:
+            st.error(f"Scan failed: {e}")
+            return
+    if note:
+        st.warning(note)
+    if table.empty:
+        st.info("Nothing passed the filters. Try a different list or lower the price/volume minimums.")
+        return
+    st.caption(f"Updated {now_et()} ET · screened {stats['screened']} symbols · {stats['setup_scored']} scored on "
+               f"chart setup · top {stats['researched']} researched for news, earnings, analysts and insiders. "
+               "Results are cached for 15 minutes.")
+    shown = table[table["Breakout score"] >= min_score].reset_index(drop=True)
+    shown["Rank"] = shown.index + 1
+    if shown.empty:
+        st.info(f"No names scored above {min_score}. That's normal in a weak market: lower the filter to see the "
+                f"best of what's there (top score was {table['Breakout score'].max():.0f}).")
+        return
+    show_df(shown, column_config={
+        "Price": st.column_config.NumberColumn(format="$%.2f"),
+        "1d %": st.column_config.NumberColumn(format="%+.1f%%"),
+        "20d %": st.column_config.NumberColumn(format="%+.1f%%"),
+        "From 52w high %": st.column_config.NumberColumn(format="%+.1f%%"),
+        "Rel. volume": st.column_config.NumberColumn(format="%.1fx"),
+        "Breakout score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d"),
+    })
+
+    st.markdown("### Why a name is flagged")
+    syms = list(shown["Ticker"])
+    pc1, pc2, pc3 = st.columns([2, 1, 1])
+    pick = pc1.selectbox("Pick a name", syms, key="bo_pick")
+    for col in (pc2, pc3):
+        col.write("")
+        col.write("")
+    pc2.button("Open in Analyze", on_click=open_in_analyzer, args=(pick,), key="bo_open")
+    pc3.button("☆ Add to favorites", on_click=add_favorites, args=([pick],), key="bo_fav")
+    r = details[pick]
+    row = shown[shown["Ticker"] == pick].iloc[0]
+    st.markdown(f"<div class='card'><div class='lbl'>{pick} · {row['Type']}</div>"
+                f"<div class='pill' style='background:{BO_COLORS[row['Rating']]}'>{row['Rating'].upper()} · "
+                f"{r['score']:.0f}/100</div>"
+                f"<div class='muted' style='margin-top:6px'>Stage: <b>{r['stage']}</b> · "
+                f"{r['signals_used']} of 6 signal groups had data</div></div>", unsafe_allow_html=True)
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("**What's lining up**")
+        for t in r["good"] or ["Nothing stands out yet."]:
+            st.markdown(f"- {t}")
+    with g2:
+        st.markdown("**Watch-outs**")
+        for t in r["bad"] or ["No red flags found in the data we can see."]:
+            st.markdown(f"- {t}")
+    comp = pd.DataFrame({"Signal group": list(r["comps"]), "Score (50 = neutral)": [round(v) for v in r["comps"].values()],
+                         "Weight": [f"{CAT_WEIGHTS[k]:.0%}" for k in r["comps"]]})
+    with st.expander("Score breakdown"):
+        show_df(comp, column_config={"Score (50 = neutral)": st.column_config.ProgressColumn(
+            min_value=0, max_value=100, format="%d")})
+        st.caption("The chart setup carries the most weight on purpose: good news on a weak chart shouldn't rank "
+                   "high. Groups with no data (for example insiders on an ETF) are left out and the rest re-weighted.")
+    news = r["detail"].get("news_items") or []
+    if news:
+        st.markdown("**Latest headlines**")
+        for n in sorted(news, key=lambda i: i["age_days"])[:8]:
+            dot = "🟢" if n["tone"] >= 1.5 else "🔴" if n["tone"] <= -1.5 else "⚪"
+            tags = f" · _{', '.join(n['tags'])}_" if n["tags"] else ""
+            age = "today" if n["age_days"] < 1 else f"{n['age_days']:.0f}d ago"
+            link = f"[{n['title']}]({n['link']})" if n["link"] else n["title"]
+            st.markdown(f"{dot} {link} · {n['source']} · {age}{tags}")
+        st.caption("Headline tone is read by simple keyword rules (🟢 positive, 🔴 negative). It's a pointer to what "
+                   "to read, not a verdict: open the article.")
+
+    with st.expander("Does the chart setup actually work? Historical check on this list"):
+        st.caption("For every symbol on this list and every week of the last ~2 years, the setup score on that day "
+                   "is compared with what the price did in the next 20 trading days. News, earnings and analyst "
+                   "data aren't available historically, so only the chart part can be checked.")
+        if st.button("Run the historical check", key="bo_hist"):
+            st.session_state["bo_hist_on"] = True
+        if st.session_state.get("bo_hist_on"):
+            with st.spinner("Replaying history…"):
+                h = run_setup_history(p["uni"], p["custom"], p["types"])
+            if not h.get("ok"):
+                st.info("Not enough history on this list to run the check.")
+            else:
+                show_df(h["table"], column_config={
+                    c: st.column_config.NumberColumn(format="%.1f%%") for c in h["table"].columns[2:]})
+                b = h["base"]
+                st.caption(f"Across all {b['cases']:,} cases, {b['ran']:.0f}% ran +{h['run_pct']:.0f}% within "
+                           f"{h['horizon']} days (average 20-day return {b['ret']:+.1f}%). If the high-score rows "
+                           "aren't clearly above that, treat the score as a watch-list tool, not an edge. The list "
+                           "is today's members, so past winners are over-represented (survivorship bias).")
+    st.info("This is a screen, not a prediction. No data source can reliably tell you what will run: setups fail "
+            "often, news can be priced in before you read it, and earnings can gap either way. Use it to build a "
+            "watch list, then check the chart, the headlines and your own risk limits before acting.")
+
+
 def render_movers(weights: dict):
+    ctl("View")
+    view = segmented("Movers view", ["Today's movers", "Breakout watch"], "Today's movers", "mv_view")
+    if view == "Breakout watch":
+        render_breakout()
+        return
     st.markdown("Finds what's moving across **stocks, ETFs, indexes, futures, currencies and crypto**, drops illiquid "
                 "names, then **ranks the movers by the analyzer's score** so you can see which big moves have "
                 "technical backing and which look stretched.")

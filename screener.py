@@ -47,6 +47,10 @@ UNIVERSES = {
     "Today's gainers (Yahoo screener)": "day_gainers",
     "Today's losers (Yahoo screener)": "day_losers",
     "Most active (Yahoo screener)": "most_actives",
+    "Growth technology stocks (Yahoo screener)": "growth_technology_stocks",
+    "Undervalued growth stocks (Yahoo screener)": "undervalued_growth_stocks",
+    "Small caps with momentum (Yahoo screener)": "aggressive_small_caps",
+    "Most shorted stocks (Yahoo screener)": "most_shorted_stocks",
     "Large-cap watchlist (built-in)": None,
     "Popular ETFs: broad, sector, international, bonds, commodities (built-in)": "etf_all",
     "Sector & thematic ETFs (built-in)": "etf_sector",
@@ -99,6 +103,8 @@ def get_universe(label: str, custom_text: str = "", count: int = 50) -> tuple[li
     if key in LISTS:
         return list(LISTS[key]), ""
     try:
+        if key in ("growth_technology_stocks", "undervalued_growth_stocks", "aggressive_small_caps", "most_shorted_stocks"):
+            count = max(count, 100)   # discovery lists: a wider net is more useful
         quotes = yf.screen(key, count=count).get("quotes", [])
         syms = _clean(q.get("symbol", "") for q in quotes)
         if syms:
